@@ -63,18 +63,30 @@ custom-gcs/
 ├── CLAUDE.md          Project context & rules for AI-assisted development
 ├── README.md           This file
 ├── docs/                Engineering documentation (see table above)
-├── gcs/                 (planned) The GCS application itself — UI + bridge. Empty in Phase 0.
-├── protocol/            (planned) Shared, versioned Drone↔GCS interface definitions. Empty in Phase 0.
-├── sim/                 (planned) Offline simulator/replay tooling for developing the GCS without drone hardware. Empty in Phase 0.
-└── tools/               (planned) Dev scripts, log inspection, etc. Empty in Phase 0.
+├── gcs/                 (planned) The GCS frontend (React/TypeScript UI). Empty — not started yet.
+├── protocol/            (planned) Shared, versioned Drone↔GCS interface definitions. Empty — not started yet.
+├── sim/                 Rosbridge-protocol simulator (Python) — a working stand-in for the real
+│                        Jetson's rosbridge_server, for developing/testing without drone hardware.
+│                        See sim/README.md to run and test it.
+└── tools/               (planned) Dev scripts, log inspection, etc. Empty — not started yet.
 ```
 
-The `gcs/`, `protocol/`, `sim/`, and `tools/` directories currently
-contain only a short README stating their intended purpose — they are
-placeholders for Phase 1 (implementation), not yet in use.
+## Current Status: Phase 1 — Implementation
+
+Phase 0 (requirements/architecture) is closed; see the docs above for
+what was decided and why. Implementation has begun:
+
+- **Built:** `sim/` — a rosbridge-protocol-compatible simulator publishing
+  synthetic telemetry/map/survivor data matching `docs/DATA_MODELS.md`,
+  with a deterministic, unit-tested simulation core and a real
+  end-to-end test against a live WebSocket server.
+- **Not yet started:** the GCS frontend (`gcs/`), the shared protocol
+  package (`protocol/`), and video handling.
 
 ## Next Step
 
-Review the Phase 0 documents above, resolve or accept the open questions
-in `docs/REQUIREMENTS.md` and `docs/DECISIONS.md`, confirm the proposed
-architecture/stack, then begin Phase 1 implementation.
+Build the GCS frontend against `sim/` as its data source (same rosbridge
+wire protocol the real Jetson will speak), starting with the two
+non-negotiable pieces: rendering `/mission/state` + `/gcs/heartbeat`
+(proving the link is alive) and the Start/Abort controls publishing to
+`/gcs/command`.

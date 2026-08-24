@@ -146,22 +146,30 @@ commit style, etc.) rather than prescribed speculatively here.
 
 ## Current Project Phase
 
-**Phase 0: Requirements, architecture, and repository bootstrap.**
+**Phase 1: Implementation, started.** Phase 0 (requirements, architecture,
+repository bootstrap) is closed. Architecture and requirements docs are
+considered settled — don't rewrite them just because implementation is
+underway; only touch them if implementation surfaces a genuine missing
+architectural decision (and if so, stop and explain before making a major
+structural change, don't just silently edit the docs).
 
-No GCS application code (UI or backend logic) has been written yet, and
-none should be written until this phase is explicitly closed out with the
-project owner. What exists so far:
+What exists:
 
-- Requirements extracted from the competition documents
-  (`docs/REQUIREMENTS.md`)
-- A proposed architecture and technology stack, not yet implemented or
-  approved for implementation (`docs/ARCHITECTURE.md`, `docs/DECISIONS.md`)
-- Proposed (not implemented) communication interfaces
-  (`docs/COMMUNICATION.md`, `docs/DATA_MODELS.md`)
-- Repository scaffolding: this file, `README.md`, `.gitignore`, and empty
-  placeholder directories for the future application, protocol
-  definitions, simulator, and dev tools (see `README.md` for the current
-  directory layout)
+- Requirements (`docs/REQUIREMENTS.md`), architecture (`docs/ARCHITECTURE.md`),
+  decisions (`docs/DECISIONS.md`), and communication interfaces
+  (`docs/COMMUNICATION.md`, `docs/DATA_MODELS.md`) — all from Phase 0,
+  reflecting the decided stack (Jetson Nano + Pixhawk 6x + rosbridge_server,
+  React/TypeScript frontend via roslibjs).
+- `sim/`: a working rosbridge-protocol simulator (Python) — speaks the
+  same WebSocket wire protocol the real Jetson's `rosbridge_server` will,
+  publishing synthetic data matching every topic in `docs/DATA_MODELS.md`.
+  This is the current hardware-isolation seam: a real client can develop
+  and test against `sim/` today and point at the real Jetson later with no
+  client-side code change. See `sim/README.md` for how to run/test it.
+  Covered by unit tests (pure simulation core, protocol encode/decode) and
+  one real end-to-end test (a live WebSocket client against a live server).
+- `gcs/` and `protocol/`: still empty placeholders — the frontend
+  (Presentation Layer) hasn't been started yet.
 
 ## Known Unknowns
 
@@ -195,11 +203,12 @@ ROS/rosbridge — has been decided, per `docs/DECISIONS.md` D-1/D-2):
 
 ## Rules Claude Must Follow When Modifying This Repository
 
-1. **Do not write GCS application code (UI, backend, protocol
-   implementation) until the project owner explicitly ends Phase 0** and
-   asks for implementation to begin. Docs, schemas-as-documentation,
-   diagrams, and placeholder scaffolding are fine; running code that
-   implements mission logic or UI is not.
+1. **Phase 0 has ended; implementation is underway.** Keep new code
+   modular and testable, keep hardware-specific interfaces isolated
+   (per the `sim/` pattern — a component a real client can't tell apart
+   from the real drone-side system), and write tests alongside meaningful
+   functionality rather than after the fact. Prefer a working vertical
+   slice over scaffolding many empty modules.
 2. **Never invent a competition requirement.** If it isn't in the Mission
    Brief or Rulebook, it does not go in `docs/REQUIREMENTS.md`. It goes in
    `docs/DECISIONS.md` (if it's a choice we're making) or the "Open
