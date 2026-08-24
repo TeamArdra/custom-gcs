@@ -44,12 +44,15 @@ network, no tethers) most constrain design freedom.
 
 Everything below crosses the "local wireless link" box in
 [ARCHITECTURE.md](ARCHITECTURE.md) §2. Per [DECISIONS.md](DECISIONS.md)
-D-1/D-2, this link is now a concrete, working default rather than fully
-open: **Jetson Nano** (companion computer, running ROS +
-`rosbridge_server`) ↔ **GCS frontend** (React, consuming ROS topics
-directly via **roslibjs** over WebSocket, port 9090). The Jetson itself
-talks to a **Pixhawk 6x** flight controller via **MAVLink**/`mavros` — that
-hop is internal to the drone side and out of this repo's scope (§3 below).
+D-0/D-1/D-2, this link is now a concrete, working default rather than
+fully open: **Jetson Nano** (companion computer, running ROS +
+`rosbridge_server`) ↔ **GCS backend** (`gcs/backend/`, a FastAPI service
+connecting via **`roslibpy`** over WebSocket, port 9090). The GCS
+frontend does not talk to rosbridge directly — it calls the backend's
+REST API, which re-exposes this data as plain JSON (D-0). The Jetson
+itself talks to a **Pixhawk 6x** flight controller via **MAVLink**/
+`mavros` — that hop is internal to the drone side and out of this repo's
+scope (§3 below).
 
 ### 2.1 Channels
 
@@ -103,12 +106,14 @@ link, WebRTC if latency proves to be a problem in testing.
 
 ### 2.4 Transport / Protocol
 
-**Decided (working default), see DECISIONS.md D-1/D-2:** `mavros`/MAVLink
-for the Pixhawk↔Jetson hop (standard, out of this repo's scope); ROS
-topics over `rosbridge_server` + roslibjs for the Jetson↔GCS hop, using
-standard ROS message types wherever one exists and two small custom
-message types (`/vision/survivors`, `/mission/state`) where it doesn't.
-Video is intentionally routed around this same connection (§2.3).
+**Decided (working default), see DECISIONS.md D-0/D-1/D-2:** `mavros`/
+MAVLink for the Pixhawk↔Jetson hop (standard, out of this repo's scope);
+ROS topics over `rosbridge_server` + `roslibpy` for the Jetson↔GCS-backend
+hop, using standard ROS message types wherever one exists and two small
+custom message types (`/vision/survivors`, `/mission/state`) where it
+doesn't. The frontend sits behind the GCS backend's REST API, not on this
+connection directly (D-0). Video is intentionally routed around this same
+connection (§2.3).
 
 Remaining open items on this decision (tracked in DECISIONS.md, not
 duplicated here): the physical RF hardware for the Jetson↔GCS local link

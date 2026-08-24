@@ -69,20 +69,22 @@ Full writeup: `docs/ARCHITECTURE.md`. Summary:
   sends the two permitted commands, exposes a local API to the UI.
 - **Communication Link**: drone side is Jetson Nano (companion computer,
   ROS + `rosbridge_server`) talking MAVLink to a Pixhawk 6x flight
-  controller; GCS side is the React frontend talking to `rosbridge_server`
-  directly via **roslibjs** (WebSocket, port 9090) for telemetry/map/
-  survivors/commands, with **video kept on a separate transport** for
-  safety-latency reasons (an abort command must never queue behind video
-  frames). See `docs/COMMUNICATION.md` and `docs/DATA_MODELS.md`.
-  Protocol layer decided; physical RF hardware still open — see
-  `docs/DECISIONS.md` D-1/D-2/D-6.
-- Stack (not yet built): React/TypeScript UI in a native shell (Tauri,
-  tentative), Tailwind CSS, Zustand for state. roslibjs talks to
-  `rosbridge_server` **directly from the frontend** — no separate custom
-  bridge process for telemetry/map/survivors/commands; a small local
-  process may still be added for video relay and/or mission logging.
+  controller. The **GCS backend** (`gcs/backend/`, FastAPI) is the only
+  thing that talks to rosbridge — via **roslibpy** (WebSocket, port 9090)
+  — for telemetry/map/survivors/commands. The **GCS frontend** (not yet
+  built) will call the backend's REST API, not rosbridge directly.
+  **Video is kept on a separate transport entirely**, bypassing both the
+  backend and rosbridge, for safety-latency reasons (an abort command must
+  never queue behind video frames). See `docs/COMMUNICATION.md` and
+  `docs/DATA_MODELS.md`. Protocol layer decided; physical RF hardware
+  still open — see `docs/DECISIONS.md` D-0/D-1/D-2/D-6.
+- Stack: **backend built** — FastAPI (`gcs/backend/`), `roslibpy` for the
+  rosbridge connection, plain REST JSON to the frontend (polled, not
+  pushed — see D-0), Swagger UI at `/docs`. **Frontend not yet built** —
+  planned as React/TypeScript in a native shell (Tauri, tentative),
+  Tailwind CSS, Zustand for state; talks to the backend's REST API only.
   Reasoning and alternatives in `docs/ARCHITECTURE.md` §5 and
-  `docs/DECISIONS.md`.
+  `docs/DECISIONS.md` D-0.
 
 ## Important Constraints
 
@@ -163,13 +165,22 @@ What exists:
 - `sim/`: a working rosbridge-protocol simulator (Python) — speaks the
   same WebSocket wire protocol the real Jetson's `rosbridge_server` will,
   publishing synthetic data matching every topic in `docs/DATA_MODELS.md`.
-  This is the current hardware-isolation seam: a real client can develop
-  and test against `sim/` today and point at the real Jetson later with no
-  client-side code change. See `sim/README.md` for how to run/test it.
-  Covered by unit tests (pure simulation core, protocol encode/decode) and
-  one real end-to-end test (a live WebSocket client against a live server).
-- `gcs/` and `protocol/`: still empty placeholders — the frontend
-  (Presentation Layer) hasn't been started yet.
+  See `sim/README.md` for how to run/test it. Covered by unit tests (pure
+  simulation core, protocol encode/decode) and one real end-to-end test
+  (a live WebSocket client against a live server).
+- `gcs/backend/`: a working FastAPI backend — the only component that
+  connects to rosbridge (real Jetson or `sim/`, via `roslibpy`), and
+  re-exposes it to the frontend as plain REST JSON. The entire operator
+  command surface (`POST /api/command/start`, `POST /api/command/abort`)
+  is enforced structurally — those are the only two mutating routes that
+  exist. Swagger UI at `/docs` for manual testing with no frontend needed.
+  See `gcs/backend/README.md`. Covered by fast fake-client API tests plus
+  one real end-to-end test against a live `sim/` subprocess.
+- **Hardware-isolation seam, currently:** `gcs/backend/` ↔ `sim/` today,
+  `gcs/backend/` ↔ real Jetson later — a host/port config change
+  (`app/config.py`), not a code change.
+- `gcs/frontend/` and `protocol/`: still not started — the Presentation
+  Layer (UI) hasn't been built yet; it will call the backend's REST API.
 
 ## Known Unknowns
 
@@ -178,9 +189,11 @@ Questions" and in `docs/DECISIONS.md` under "Open / Unresolved." Headline
 items (updated now that the drone-side stack — Jetson Nano + Pixhawk 6x +
 ROS/rosbridge — has been decided, per `docs/DECISIONS.md` D-1/D-2):
 
-- **The `/gcs/command` (Start/Abort) topic is not yet defined** by the
-  drone-side topic table, and is the single most safety-critical piece
-  still open — see `docs/DECISIONS.md` D-10.
+- **The `/gcs/command` (Start/Abort) topic is implemented** end-to-end
+  now (`gcs/backend/app/ros_client.py` → `sim/`), including automated
+  tests — but only against `sim/`. Still needs a real subscriber node on
+  the actual Jetson, and a latency test under realistic (video-present)
+  link load, before it's done for real — see `docs/DECISIONS.md` D-10.
 - **Video must not share the rosbridge/WebSocket connection** with
   telemetry/map/commands (base64+JSON overhead, and risk of delaying the
   abort command) — transport TBD (MJPEG vs. WebRTC), see D-6/D-3.

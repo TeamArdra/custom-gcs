@@ -63,7 +63,10 @@ custom-gcs/
 ├── CLAUDE.md          Project context & rules for AI-assisted development
 ├── README.md           This file
 ├── docs/                Engineering documentation (see table above)
-├── gcs/                 (planned) The GCS frontend (React/TypeScript UI). Empty — not started yet.
+├── gcs/
+│   ├── backend/         FastAPI backend (Python) — the only component that talks to rosbridge.
+│   │                    Exposes a plain REST API + Swagger docs at /docs. See gcs/backend/README.md.
+│   └── frontend/        (planned) The GCS UI (React/TypeScript). Not started yet.
 ├── protocol/            (planned) Shared, versioned Drone↔GCS interface definitions. Empty — not started yet.
 ├── sim/                 Rosbridge-protocol simulator (Python) — a working stand-in for the real
 │                        Jetson's rosbridge_server, for developing/testing without drone hardware.
@@ -77,16 +80,20 @@ Phase 0 (requirements/architecture) is closed; see the docs above for
 what was decided and why. Implementation has begun:
 
 - **Built:** `sim/` — a rosbridge-protocol-compatible simulator publishing
-  synthetic telemetry/map/survivor data matching `docs/DATA_MODELS.md`,
-  with a deterministic, unit-tested simulation core and a real
-  end-to-end test against a live WebSocket server.
-- **Not yet started:** the GCS frontend (`gcs/`), the shared protocol
-  package (`protocol/`), and video handling.
+  synthetic telemetry/map/survivor data matching `docs/DATA_MODELS.md`.
+- **Built:** `gcs/backend/` — a FastAPI service that connects to
+  rosbridge (`sim/` today, the real Jetson later — a config change, not a
+  code change) and re-exposes it as a plain REST API. The two-command
+  operator surface (start/abort) is enforced structurally: those are the
+  only mutating routes that exist. Testable directly via Swagger at
+  `/docs`, no frontend required.
+- **Not yet started:** the GCS frontend (`gcs/frontend/`), the shared
+  protocol package (`protocol/`), and video handling.
 
 ## Next Step
 
-Build the GCS frontend against `sim/` as its data source (same rosbridge
-wire protocol the real Jetson will speak), starting with the two
-non-negotiable pieces: rendering `/mission/state` + `/gcs/heartbeat`
-(proving the link is alive) and the Start/Abort controls publishing to
-`/gcs/command`.
+Build the GCS frontend against `gcs/backend/`'s REST API (itself running
+against `sim/` during development), starting with the two non-negotiable
+pieces: rendering live telemetry/mission status (proving the link is
+alive end-to-end) and the Start/Abort controls calling
+`POST /api/command/start` / `POST /api/command/abort`.

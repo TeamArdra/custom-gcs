@@ -1,7 +1,8 @@
 # gcs/
 
-Planned location for the GCS application itself (Presentation Layer +
-Link/Bridge Layer — see `../docs/ARCHITECTURE.md`).
+The GCS application: Presentation Layer (frontend) + Link/Bridge Layer
+(backend) — see `../docs/ARCHITECTURE.md`.
 
-**Phase 0: empty.** No application code exists yet. See `../CLAUDE.md`
-"Current Project Phase" before adding anything here.
+- `backend/` — **built.** A FastAPI service, the only component that
+  talks to rosbridge (real Jetson or `../sim/`). See `backend/README.md`.
+- `frontend/` — **not started yet.** Will call the backend's REST API.

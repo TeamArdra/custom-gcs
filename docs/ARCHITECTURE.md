@@ -93,15 +93,19 @@ Layer below — it does not talk to radios/serial ports/sockets directly.
 This isolation matters because it lets the UI be developed and tested
 entirely offline against a simulator (see §6) without any drone hardware.
 
-### 3.2 Link / Bridge Layer ("GCS Backend")
-Owns the actual communication with the drone: parses the inbound telemetry/
-map/detection/video streams into the data model defined in
+### 3.2 Link / Bridge Layer ("GCS Backend") — implemented as a FastAPI service
+Owns the actual communication with the drone: the only component that
+connects to rosbridge (real Jetson or `sim/rosbridge_sim`), parses
+inbound telemetry/map/detection into the data model defined in
 [DATA_MODELS.md](DATA_MODELS.md), and is the only component allowed to
-transmit the two permitted commands upstream. Exposes a local, transport-
-agnostic API (e.g., WebSocket + a local media stream) to the Presentation
-Layer. Isolating this layer means the *actual* RF technology (see
-[DECISIONS.md](DECISIONS.md)) can change without touching the UI, and the
-UI can be exercised against recorded/simulated data.
+transmit the two permitted commands upstream. Exposes a local REST API
+(`gcs/backend/`, built on FastAPI) to the Presentation Layer — plain JSON,
+not raw ROS message shapes. Isolating this layer means the *actual* RF
+technology and drone-side stack (see [DECISIONS.md](DECISIONS.md)) can
+change without touching the UI, and the UI can be built and tested against
+this backend pointed at `sim/` long before real hardware exists. See
+[DECISIONS.md](DECISIONS.md) D-0 for why this layer was reinstated after
+an intermediate design briefly removed it.
 
 ### 3.3 Communication Link (protocol + transport)
 The abstract contract for what bytes/messages cross the air gap between
@@ -184,57 +188,53 @@ also logged in [DECISIONS.md](DECISIONS.md) with status.
   reasonable alternative if the team has strong Qt experience already —
   flagged as an open alternative, not ruled out.
 
-### 5.2 Link / Bridge Layer: roslibjs, direct — no custom bridge process for most of the system
+### 5.2 Link / Bridge Layer: a FastAPI backend, using `roslibpy` as its rosbridge client
 
-**Updated from the original Phase 0 proposal** once the drone-side stack
-was decided (DECISIONS.md D-0/D-1/D-2). The drone side runs
-`rosbridge_server` on the Jetson Nano, which already exposes ROS topics as
-a JSON-over-WebSocket API — exactly the "local, transport-agnostic API"
-this layer was originally proposed to hand-build. So for telemetry, map,
-survivor detections, mission state, heartbeat, and the two outbound
-commands, **the Presentation Layer (React) talks to `rosbridge_server`
-directly via `roslibjs`**, with no separate custom bridge process in
-between.
+**Implemented** (`gcs/backend/`, Phase 1) — see DECISIONS.md D-0 for the
+reasoning and the short history of why this layer was briefly removed and
+then reinstated. The backend is the only component that speaks rosbridge
+protocol: it uses `roslibpy` (the standard Python rosbridge client) to
+connect to `rosbridge_server` (real Jetson or `sim/rosbridge_sim`,
+selected by `app/config.py`), subscribes to every topic in
+[DATA_MODELS.md](DATA_MODELS.md), and caches the latest value per topic in
+memory. It exposes that cache to the Presentation Layer as plain REST
+JSON (`app/schemas.py`) — the frontend never sees a `PoseStamped` or an
+`OccupancyGrid` directly. The two permitted commands are the only
+mutating routes in the whole API (`POST /api/command/start`,
+`POST /api/command/abort`); no other route exists, which is what makes
+"the operator can only start/abort" a structural property of the backend
+rather than a frontend convention.
 
-**What's left of this layer, in practice:**
-- **Video** stays a separate concern by design (§5.3, and DECISIONS.md
-  D-6) — it is not sent through rosbridge, so whatever serves it (an
-  MJPEG-over-HTTP endpoint or WebRTC, per D-3) lives on the Jetson side,
-  not as a GCS-local process.
-- A small local process may still be worth adding purely for **mission
-  logging** (ARCHITECTURE.md §3.4, DECISIONS.md D-5) — e.g. a lightweight
-  subscriber that writes every message to a local append-only log for
-  post-mission review, since the rules leave no other record given "no
-  post-flight processing." This is optional and much smaller in scope
-  than the bridge originally proposed; it could plausibly run inside the
-  Tauri app itself rather than as a separate process.
-- **Why this is a real simplification, not just a rename:** fewer moving
-  parts, one fewer process to keep alive during a timed mission, and no
-  custom protocol-parsing code to maintain on the GCS side for anything
-  that already has a standard ROS message type.
+**Video** stays a separate concern by design (§5.3, and DECISIONS.md
+D-6) — it is not sent through rosbridge and is not proxied by this
+backend either; whatever serves it (an MJPEG-over-HTTP endpoint or
+WebRTC, per D-3) is consumed by the frontend directly from the Jetson.
 
-**Original reasoning, still relevant to the pieces that remain (video,
-optional logging):** Python remains a reasonable choice for either, given
-drone-side autonomy stacks in this space overwhelmingly land on
-ROS/Python, and Python has mature, low-friction libraries for the
-transports still in play (HTTP/WebRTC serving, JSON/log I/O).
+Mission logging (DECISIONS.md D-5) is a natural fit for this layer if
+added later — the backend already sees every message that crosses the
+link.
 
-### 5.3 Local Transport (UI ↔ Jetson)
+### 5.3 Local Transport (Frontend ↔ Backend ↔ Jetson)
 
-- Control/telemetry/map/detections/commands: **`rosbridge_server` over
-  WebSocket (port 9090)**, consumed directly by **roslibjs** in the React
-  frontend — see [COMMUNICATION.md](COMMUNICATION.md) §2.2 for the topic
-  list.
-- Video: a **separate** path from the control channel (leaning MJPEG-over-
-  HTTP first, per DECISIONS.md D-3), consumed by the UI's `<video>`
-  element, so that heavy video traffic never head-of-line-blocks
-  time-critical telemetry or — critically — the abort command
-  (DECISIONS.md D-6/D-10).
+- **Frontend ↔ Backend:** REST over HTTP (`gcs/backend/app/main.py`),
+  polled by the frontend rather than pushed — an explicit, revisitable
+  tradeoff (DECISIONS.md D-0) made for simplicity and Swagger-based
+  testability before a frontend exists. Swagger UI is served at `/docs`.
+- **Backend ↔ Jetson:** `rosbridge_server` over WebSocket (port 9090),
+  via `roslibpy` — see [COMMUNICATION.md](COMMUNICATION.md) §2.2 for the
+  topic list.
+- Video: a **separate** path that bypasses both of the above (leaning
+  MJPEG-over-HTTP first, per DECISIONS.md D-3), consumed by the UI's
+  `<video>` element directly from the Jetson, so that heavy video traffic
+  never head-of-line-blocks time-critical telemetry or — critically — the
+  abort command (DECISIONS.md D-6/D-10).
 
 ### 5.4 Drone ↔ GCS Link
 
 **Protocol layer decided** (DECISIONS.md D-1/D-2): `rosbridge_server` +
-roslibjs for control/telemetry/map/commands; a separate path for video.
+`roslibpy` (from the `gcs/backend/` FastAPI service, not the frontend
+directly — D-0) for control/telemetry/map/commands; a separate path for
+video.
 **Physical RF hardware still open** — depends on drone-side hardware
 decisions made in parallel, and on resolving Open Question #1 in
 [REQUIREMENTS.md](REQUIREMENTS.md) (whether a private/local Wi-Fi link is

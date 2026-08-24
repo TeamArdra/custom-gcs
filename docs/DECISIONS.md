@@ -107,31 +107,60 @@ mission state: an enum/string phase value, published on change.
 this entry should be updated to reference them by name once they exist.
 
 ### D-0: Overall technology stack
-**Status:** Decided (working default, updated from the original Phase 0
-proposal in light of D-1/D-2). **Presentation Layer:** React + TypeScript
-UI in a native shell (Tauri, tentative; Electron/plain browser as
-fallbacks — see original reasoning below), connecting **directly** to
-`rosbridge_server` via **roslibjs** for telemetry, map, survivors, mission
-state, heartbeat, and outbound commands (D-10). **This removes the need
-for a separate custom Python bridge process for most of the system** — the
-original Phase 0 proposal assumed a hand-rolled bridge layer; rosbridge +
-roslibjs now fills that role for everything except video. A small
-service/process is still likely needed only for: (a) the **video** relay,
-which is deliberately kept off the rosbridge connection (D-6), and (b)
-optional local mission logging (D-5) — both much smaller in scope than
-the original bridge design, and Python remains a reasonable choice for
-either if needed.
-**Original reasoning (still holds for the parts that remain):** web
-rendering stack (Canvas/WebGL, `<video>`) is the fastest path to a live
-map+video+status UI for a student team on this timeline; native shell
-serves the offline-only constraint and enables local file access for
-mission logging.
+**Status:** Decided and **implemented** (Phase 1). **Reinstates a backend
+layer** — see "D-0 history" below for why the intermediate "no backend
+needed" version of this entry was wrong.
+
+- **GCS Backend:** a FastAPI service (`gcs/backend/`) is the only thing
+  that talks to rosbridge. It owns a `roslibpy` connection (real Jetson or
+  `sim/rosbridge_sim`, chosen by host/port config — `app/config.py`),
+  caches the latest value per topic, and exposes a plain REST API:
+  `GET /health`, `GET /api/telemetry`, `GET /api/map`, `GET /api/survivors`,
+  and exactly two mutating routes, `POST /api/command/start` and
+  `POST /api/command/abort`. Auto-generated Swagger UI at `/docs` — every
+  route, including the two commands, is testable by hand with no frontend
+  written yet.
+- **GCS Frontend (not yet built):** will call the backend's REST API, not
+  rosbridge directly. Live data delivery is **REST polling**, not a
+  WebSocket push from the backend (explicit tradeoff, chosen for now —
+  simpler to build and to test via Swagger; revisit if polling lag on
+  10 Hz pose proves to be a real problem once a frontend exists). Stack
+  choice for the frontend itself (React/TypeScript, Tauri vs. Electron vs.
+  browser) is unchanged from the original reasoning below and still
+  pending — nothing in `gcs/backend/` depends on that choice.
+
+**Why reinstating this is right, not just "back to how it was":** the
+"talk to rosbridge directly" version optimized away a layer that turned
+out to be pulling real weight — (1) **testability**: every route,
+including the two commands, is clickable in Swagger before any frontend
+exists; (2) **stronger safety encapsulation**: "the operator can only
+start/abort" becomes true because *no other mutating route is defined* in
+the backend, not just because the frontend promises not to call one — see
+`gcs/backend/tests/test_api_with_fake_client.py::test_no_route_exists_beyond_the_documented_command_surface`;
+(3) **frontend/ROS decoupling**: the frontend will only ever see
+flattened, backend-owned JSON schemas (`app/schemas.py`), never
+`PoseStamped`/`OccupancyGrid`/rosbridge's envelope format directly.
+**Cost, stated plainly:** one more process, one more hop. Irrelevant at
+this data rate (≤10 Hz telemetry, not a control loop).
+
+**Original reasoning for the frontend stack (still holds):** web rendering
+stack (Canvas/WebGL, `<video>`) is the fastest path to a live map+video+
+status UI for a student team on this timeline; a native shell (Tauri,
+tentative) serves the offline-only constraint and enables local file
+access for mission logging.
 **Alternatives considered and set aside (not ruled out):** a native
-Qt/PySide desktop app; a hand-rolled bridge instead of rosbridge (rejected
-now that rosbridge/roslibjs covers the same ground with less custom code).
-**Revisit when:** before writing the first line of application code — this
-whole decision should be explicitly re-confirmed with whoever is doing the
-implementation, not just inherited from Phase 0 planning.
+Qt/PySide desktop app for the frontend.
+**Revisit when:** frontend implementation begins — the WebSocket-vs-
+polling tradeoff above and the native-shell choice both deserve a
+concrete look once there's a real UI to build against.
+
+**D-0 history (why this entry changed twice):** Phase 0 originally
+proposed a bridge layer. After the Jetson/rosbridge stack was locked in
+(D-1/D-2), this entry was revised to remove that layer entirely, reasoning
+that `roslibjs` could talk to `rosbridge_server` directly from the
+frontend with no backend needed. That revision shipped as working code
+(a `sim/`-only Phase 1 milestone) before the tradeoff above was raised and
+reconsidered — the backend is now built and is not a hypothetical.
 
 ---
 
