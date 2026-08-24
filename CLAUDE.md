@@ -67,13 +67,22 @@ Full writeup: `docs/ARCHITECTURE.md`. Summary:
 - **Link/Bridge Layer** (GCS Backend): the only component that talks to
   the drone's radio link; parses inbound telemetry/map/detection/video,
   sends the two permitted commands, exposes a local API to the UI.
-- **Communication Link**: the protocol/transport between drone and GCS —
-  see `docs/COMMUNICATION.md` and `docs/DATA_MODELS.md`. Co-owned with the
-  drone-side team; not finalized (see `docs/DECISIONS.md`).
-- Proposed (not yet built) stack: React/TypeScript UI in a native shell
-  (Tauri, tentative), Python asyncio bridge service, local WebSocket +
-  separate video stream between them. Reasoning and alternatives in
-  `docs/ARCHITECTURE.md` §5 and `docs/DECISIONS.md`.
+- **Communication Link**: drone side is Jetson Nano (companion computer,
+  ROS + `rosbridge_server`) talking MAVLink to a Pixhawk 6x flight
+  controller; GCS side is the React frontend talking to `rosbridge_server`
+  directly via **roslibjs** (WebSocket, port 9090) for telemetry/map/
+  survivors/commands, with **video kept on a separate transport** for
+  safety-latency reasons (an abort command must never queue behind video
+  frames). See `docs/COMMUNICATION.md` and `docs/DATA_MODELS.md`.
+  Protocol layer decided; physical RF hardware still open — see
+  `docs/DECISIONS.md` D-1/D-2/D-6.
+- Stack (not yet built): React/TypeScript UI in a native shell (Tauri,
+  tentative), Tailwind CSS, Zustand for state. roslibjs talks to
+  `rosbridge_server` **directly from the frontend** — no separate custom
+  bridge process for telemetry/map/survivors/commands; a small local
+  process may still be added for video relay and/or mission logging.
+  Reasoning and alternatives in `docs/ARCHITECTURE.md` §5 and
+  `docs/DECISIONS.md`.
 
 ## Important Constraints
 
@@ -158,21 +167,31 @@ project owner. What exists so far:
 
 Tracked in full, with reasoning, in `docs/REQUIREMENTS.md` under "Open
 Questions" and in `docs/DECISIONS.md` under "Open / Unresolved." Headline
-items:
+items (updated now that the drone-side stack — Jetson Nano + Pixhawk 6x +
+ROS/rosbridge — has been decided, per `docs/DECISIONS.md` D-1/D-2):
 
-- Whether a private/local Wi-Fi link to the drone is permitted (rules ban
-  "public Wi-Fi" specifically, not Wi-Fi generally).
-- The drone ↔ GCS transport/link hardware and protocol (custom vs.
-  MAVLink; radio technology) — jointly owned with the drone-side team, not
-  yet chosen.
-- The grid coordinate labeling convention and how it's reconciled with the
-  organiser's reference grid at scoring time.
-- Video protocol/format/latency target — unspecified by the rules.
+- **The `/gcs/command` (Start/Abort) topic is not yet defined** by the
+  drone-side topic table, and is the single most safety-critical piece
+  still open — see `docs/DECISIONS.md` D-10.
+- **Video must not share the rosbridge/WebSocket connection** with
+  telemetry/map/commands (base64+JSON overhead, and risk of delaying the
+  abort command) — transport TBD (MJPEG vs. WebRTC), see D-6/D-3.
+- The physical RF hardware for the Jetson↔GCS local link (WiFi bridge
+  type, range/interference in a netted arena) — D-1's residual item.
+- Whether Pixhawk's EKF has a valid non-GPS position source indoors
+  (presumably SLAM pose → `VISION_POSITION_ESTIMATE` → EKF fusion) — needs
+  confirmation from the flight-control subteam, see D-11.
+- `/vision/survivors` and `/mission/state` need concrete custom `.msg`
+  definitions from the drone-side team (currently only specified as field
+  lists in `docs/DATA_MODELS.md`) — see D-13.
+- Jetson Nano compute budget running SLAM + detection + video encode +
+  rosbridge concurrently — informational risk, drone-side, see D-12.
+- The grid coordinate labeling convention's *display* form (numeric vs.
+  chess-style) and how the team's grid is reconciled with the organiser's
+  reference grid at scoring time — origin/resolution convention itself is
+  now decided (D-7), the rest isn't.
 - The physical form factor of the GCS hardware (laptop/tablet/custom
-  panel) — not mandated.
-- The drone-side onboard sensing/compute stack (SLAM approach, detection
-  model, compute platform) — a parallel workstream that determines the
-  real shape and update-rate of the data this GCS will consume.
+  panel) — not mandated by the rules.
 
 ## Rules Claude Must Follow When Modifying This Repository
 

@@ -51,20 +51,22 @@ than any technology choice does:
 │                                                                        │
 │   ┌────────────────────────────────────────────────────────────┐    │
 │   │                         DRONE                                │    │
-│   │  ┌───────────────┐  ┌────────────────────┐  ┌────────────┐ │    │
-│   │  │ Flight         │  │ Onboard Autonomy /  │  │  Camera /  │ │    │
-│   │  │ Controller     │◄─►│ Companion Computer  │◄─►│  Video     │ │    │
-│   │  │ (attitude,     │  │  - SLAM / mapping   │  │  encoder   │ │    │
-│   │  │  motor control,│  │  - survivor detect  │  └──────┬─────┘ │    │
-│   │  │  failsafes)    │  │  - path planning    │         │        │    │
-│   │  └───────────────┘  │  - grid localisation │         │        │    │
-│   │                     │  - link/radio driver │         │        │    │
-│   │                     └──────────┬───────────┘         │        │    │
-│   └────────────────────────────────┼──────────────────────┼───────┘    │
-│                                     │ local wireless link   │           │
-│                                     │ (telemetry+map+       │ video     │
-│                                     │  detections+cmd)      │ stream    │
-│                                     ▼                       ▼           │
+│   │  ┌───────────────┐   MAVLink   ┌────────────────────┐       │    │
+│   │  │ Flight         │◄──/mavros─►│ Onboard Autonomy /  │       │    │
+│   │  │ Controller     │            │ Companion Computer   │       │    │
+│   │  │ Pixhawk 6x     │            │ Jetson Nano          │       │    │
+│   │  │ (attitude,     │            │  - ROS + rosbridge   │       │    │
+│   │  │  motor control,│            │  - SLAM / mapping    │       │    │
+│   │  │  failsafes)    │            │  - survivor detect   │       │    │
+│   │  └───────────────┘            │  - path planning     │       │    │
+│   │                                │  - camera / video enc│       │    │
+│   │                                └──────────┬───────────┘       │    │
+│   └───────────────────────────────────────────┼──────────────────┘    │
+│                                                 │ local wireless link   │
+│                                                 │ rosbridge_server:9090 │
+│                                                 │ (telemetry+map+cmd)   │
+│                                                 │ + separate video path │
+│                                                 ▼                      │
 │   ┌────────────────────────────────────────────────────────────┐      │
 │   │                  GROUND CONTROL STATION (GCS)                │      │
 │   │   operated by exactly one operator, this repository          │      │
@@ -73,8 +75,10 @@ than any technology choice does:
 ```
 
 Everything inside the dotted arena box must work with **no external
-network**. The "local wireless link" and "video stream" are the team's own
-RF link(s) — technology TBD, see [DECISIONS.md](DECISIONS.md) §Comm Link.
+network**. The Jetson↔GCS link's *protocol* layer is decided (rosbridge/
+roslibjs for telemetry+map+command, a separate path for video — see
+[DECISIONS.md](DECISIONS.md) D-1/D-2/D-6); the physical RF hardware
+underneath it is still open (D-1's residual item).
 
 ## 3. Major Subsystems and Boundaries
 
@@ -180,45 +184,64 @@ also logged in [DECISIONS.md](DECISIONS.md) with status.
   reasonable alternative if the team has strong Qt experience already —
   flagged as an open alternative, not ruled out.
 
-### 5.2 Link / Bridge Layer: Python service (asyncio)
+### 5.2 Link / Bridge Layer: roslibjs, direct — no custom bridge process for most of the system
 
-**Reasoning:**
-- Drone-side autonomy stacks in this space overwhelmingly land on
-  ROS/ROS2 and Python/C++ (SLAM libraries, detection models, MAVLink-based
-  flight stacks are all Python-friendly). A Python bridge minimizes the
-  translation distance to whatever the drone side ends up emitting, and
-  makes it easy to prototype protocol adapters before the drone-side
-  interface is finalized.
-- Python has mature, low-friction libraries for exactly the transports in
-  play here: serial/radio I/O, WebSockets, JSON/binary parsing, and (if
-  MAVLink is adopted per [DECISIONS.md](DECISIONS.md)) `pymavlink`/MAVSDK.
-- Keeping this layer as a separate local process (talking to the UI over a
-  local WebSocket + local media stream) means it can be developed and unit
-  tested completely independently of the UI, and swapped or rewritten
-  (e.g., in Rust, if performance ever demands it) without the UI caring.
-- **Alternative considered:** implement the bridge directly inside the
-  Tauri app's Rust backend. Rejected as the default because it couples
-  protocol/parsing iteration speed to Rust build times and Rust
-  familiarity, which is a worse trade for a fast-moving student team than
-  the small latency cost of an extra local process boundary. Revisit if
-  profiling shows the process boundary is a real bottleneck.
+**Updated from the original Phase 0 proposal** once the drone-side stack
+was decided (DECISIONS.md D-0/D-1/D-2). The drone side runs
+`rosbridge_server` on the Jetson Nano, which already exposes ROS topics as
+a JSON-over-WebSocket API — exactly the "local, transport-agnostic API"
+this layer was originally proposed to hand-build. So for telemetry, map,
+survivor detections, mission state, heartbeat, and the two outbound
+commands, **the Presentation Layer (React) talks to `rosbridge_server`
+directly via `roslibjs`**, with no separate custom bridge process in
+between.
 
-### 5.3 Local Transport (UI ↔ Bridge)
+**What's left of this layer, in practice:**
+- **Video** stays a separate concern by design (§5.3, and DECISIONS.md
+  D-6) — it is not sent through rosbridge, so whatever serves it (an
+  MJPEG-over-HTTP endpoint or WebRTC, per D-3) lives on the Jetson side,
+  not as a GCS-local process.
+- A small local process may still be worth adding purely for **mission
+  logging** (ARCHITECTURE.md §3.4, DECISIONS.md D-5) — e.g. a lightweight
+  subscriber that writes every message to a local append-only log for
+  post-mission review, since the rules leave no other record given "no
+  post-flight processing." This is optional and much smaller in scope
+  than the bridge originally proposed; it could plausibly run inside the
+  Tauri app itself rather than as a separate process.
+- **Why this is a real simplification, not just a rename:** fewer moving
+  parts, one fewer process to keep alive during a timed mission, and no
+  custom protocol-parsing code to maintain on the GCS side for anything
+  that already has a standard ROS message type.
 
-- Control/telemetry/map/detections: local **WebSocket**, JSON messages
-  matching [DATA_MODELS.md](DATA_MODELS.md).
-- Video: a separate low-latency path from the control channel (e.g., a
-  local HTTP MJPEG/WebRTC endpoint the bridge serves and the UI's `<video>`
-  element consumes) so that heavy video traffic never head-of-line-blocks
-  time-critical telemetry or the abort command.
+**Original reasoning, still relevant to the pieces that remain (video,
+optional logging):** Python remains a reasonable choice for either, given
+drone-side autonomy stacks in this space overwhelmingly land on
+ROS/Python, and Python has mature, low-friction libraries for the
+transports still in play (HTTP/WebRTC serving, JSON/log I/O).
 
-### 5.4 Drone ↔ GCS Link (open, pending decision)
+### 5.3 Local Transport (UI ↔ Jetson)
 
-Not chosen yet — this depends on drone-side hardware decisions made in
-parallel and on resolving Open Question #1 in
+- Control/telemetry/map/detections/commands: **`rosbridge_server` over
+  WebSocket (port 9090)**, consumed directly by **roslibjs** in the React
+  frontend — see [COMMUNICATION.md](COMMUNICATION.md) §2.2 for the topic
+  list.
+- Video: a **separate** path from the control channel (leaning MJPEG-over-
+  HTTP first, per DECISIONS.md D-3), consumed by the UI's `<video>`
+  element, so that heavy video traffic never head-of-line-blocks
+  time-critical telemetry or — critically — the abort command
+  (DECISIONS.md D-6/D-10).
+
+### 5.4 Drone ↔ GCS Link
+
+**Protocol layer decided** (DECISIONS.md D-1/D-2): `rosbridge_server` +
+roslibjs for control/telemetry/map/commands; a separate path for video.
+**Physical RF hardware still open** — depends on drone-side hardware
+decisions made in parallel, and on resolving Open Question #1 in
 [REQUIREMENTS.md](REQUIREMENTS.md) (whether a private/local Wi-Fi link is
-acceptable). Candidates and tradeoffs are recorded in
-[DECISIONS.md](DECISIONS.md) rather than decided here.
+acceptable — the current working answer, per D-1, is yes: the rules ban
+"public Wi-Fi," not a private point-to-point link). Candidates and
+tradeoffs for the actual radio hardware are recorded in
+[DECISIONS.md](DECISIONS.md) D-1 rather than decided here.
 
 ## 6. Offline Development Strategy
 

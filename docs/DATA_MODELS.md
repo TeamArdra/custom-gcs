@@ -1,144 +1,150 @@
 # Data Models — NIDAR AirMouse GCS
 
-Status: **Phase 0 — proposed schemas, illustrative, not yet implemented.**
+Status: **Phase 0 — working schemas, tied to the stack decisions in
+[DECISIONS.md](DECISIONS.md) (D-0 through D-13). Not yet implemented.**
+Frontend consumes these directly via **roslibjs** over
+**`rosbridge_server`** (WebSocket, port 9090) — see
+[COMMUNICATION.md](COMMUNICATION.md). Field names below reflect either a
+standard ROS message type (used as-is) or a proposed custom `.msg`
+(marked "custom", to be finalized with the drone-side/companion-computer
+team, per D-13).
 
-These are draft message shapes for the Drone ↔ GCS interface defined in
-[COMMUNICATION.md](COMMUNICATION.md). They exist to make the interface
-concrete enough to review and to design a simulator against — they are
-**not final** and should be revised jointly with the drone-side team once
-the transport/protocol decision in [DECISIONS.md](DECISIONS.md) is made.
-Field names and JSON framing here are illustrative; if MAVLink or another
-existing protocol is adopted, these become "the fields we need," mapped
-onto whatever wire format that protocol uses, rather than a literal JSON
-schema.
+Grid convention (per D-7/D-7a): a **1 m × 1 m cell grid** over the
+≤15 m × 15 m arena (≤225 cells), origin pinned to the designated entry/
+exit point, derived from whatever `nav_msgs/OccupancyGrid.info` (resolution
++ origin) the map topic reports. Survivor coordinates and map cells share
+this exact origin/resolution so they cannot drift apart from each other.
 
-Grid convention used throughout: a **1 m × 1 m cell grid** over the
-≤15 m × 15 m arena (up to 225 cells), per Rulebook §9 scoring language —
-see [REQUIREMENTS.md](REQUIREMENTS.md) §8–9. The exact origin/labeling
-convention is an open question (REQUIREMENTS.md Open Question #3); `col`/
-`row` integer indices are used below as a placeholder.
+## 1. Mission Status — `/mission/state`
 
-## 1. `MissionStatus` (Drone → GCS)
-
-Overall mission state, sent periodically and on every state transition.
+**Type:** custom (proposed: a small `.msg` with an enum-like string field;
+`std_msgs/String` is the minimum viable version). Published **on change**,
+not periodically.
 
 ```jsonc
+// std_msgs/String equivalent, as seen by roslibjs
 {
-  "type": "mission_status",
-  "timestamp": "2026-08-24T10:15:32.104Z",
-  "state": "exploring",      // "idle" | "entering" | "exploring" | "exiting" | "complete" | "aborted"
-  "elapsed_seconds": 214,
-  "survivors_found": 3,
-  "survivors_expected_max": 6
+  "data": "searching"   // "idle" | "entering" | "searching" | "exiting" | "complete" | "aborted"
 }
 ```
 
-## 2. `TelemetryUpdate` (Drone → GCS)
+If richer state is useful later (elapsed time, survivors found so far),
+that belongs in a custom message rather than overloading `std_msgs/String`
+— not yet decided; start minimal, expand only if needed (see D-13).
 
-Drone position/pose estimate and vehicle health. High frequency (e.g.
-5–10 Hz), separate from the lower-frequency `MissionStatus`.
+## 2. Telemetry — Battery: `/mavros/battery`
+
+**Type:** `sensor_msgs/BatteryState` (standard `mavros` topic — no custom
+work needed). Published 1–2 Hz. GCS reads `percentage` and `voltage`.
+
+## 3. Telemetry — Pose: `/mavros/local_position/pose`
+
+**Type:** `geometry_msgs/PoseStamped` (standard `mavros` topic). Published
+10+ Hz. Position is arena-relative (local ENU frame from Pixhawk's EKF),
+**never GPS** — GPS is unavailable/forbidden indoors by rule.
+
+**Caveat (see DECISIONS.md D-11, not a GCS-side fix):** this topic is only
+meaningful if Pixhawk's EKF has a non-GPS position source indoors —
+presumably SLAM pose fed back via MAVLink `VISION_POSITION_ESTIMATE`. The
+GCS should not assume this pose is automatically trustworthy; if the
+drone-side telemetry ever exposes a confidence/validity flag, surface it
+(see `LinkHealth`, §6 below) rather than rendering position blindly.
+
+## 4. 2D Map — `/slam/map`
+
+**Type:** `nav_msgs/OccupancyGrid` (standard — this is the right call, see
+D-1/D-7a). Published 1–5 Hz, **full grid each time** (not incremental —
+see D-9; at 1 m resolution over ≤15×15 m this is ≤225 `int8` cells, cheap
+enough to resend in full).
 
 ```jsonc
+// nav_msgs/OccupancyGrid, as seen by roslibjs
 {
-  "type": "telemetry",
-  "timestamp": "2026-08-24T10:15:32.204Z",
-  "position_estimate": { "x_m": 6.4, "y_m": 3.1, "heading_deg": 87.0 },
-  "position_confidence": "high",   // qualitative, since there's no GPS ground truth indoors
-  "battery_pct": 71,
-  "flight_mode": "autonomous",
-  "link_rssi": -62                 // optional, if the link technology exposes it
-}
-```
-
-Position is arena-relative (meters from the entry/exit point or another
-agreed local origin), never GPS — GPS is unavailable indoors by design.
-
-## 3. `MapDelta` (Drone → GCS)
-
-Incremental update to the shared 1 m × 1 m occupancy/connectivity grid.
-Sent as new cells are explored/classified — never a full-map resend,
-to keep bandwidth low over a constrained local link. The GCS accumulates
-deltas into a persistent grid state for rendering.
-
-```jsonc
-{
-  "type": "map_delta",
-  "timestamp": "2026-08-24T10:15:33.500Z",
-  "cells": [
-    {
-      "col": 4, "row": 2,
-      "classification": "corridor",   // "wall" | "open" | "corridor" | "room" | "unknown"
-      "walls": { "n": true, "e": false, "s": true, "w": false }, // which edges of the cell are blocked
-      "confidence": 0.92
+  "header": { "stamp": { "sec": 1745, "nanosec": 0 }, "frame_id": "map" },
+  "info": {
+    "resolution": 1.0,             // meters/cell — GCS-facing topic; SLAM's internal working resolution may be finer (D-7a)
+    "width": 15,
+    "height": 15,
+    "origin": {                    // pinned to the entry/exit point (D-7)
+      "position": { "x": 0.0, "y": 0.0, "z": 0.0 },
+      "orientation": { "x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0 }
     }
-  ]
+  },
+  "data": [-1, -1, 0, 0, 100, 0, "...225 int8 values, row-major, -1=unknown 0=free 100=occupied"]
 }
 ```
 
-The per-cell `walls`/edges shape is chosen to match the scoring language
-directly ("correctly map the presence of walls, openings, corridors or
-accessible directions adjoining that cell" — Rulebook §9, PS2 §2).
+`data[row * width + col]` gives that cell's occupancy (standard
+`OccupancyGrid` semantics: `-1` unknown, `0` free, `100` occupied,
+intermediate values = probability). The GCS derives "walls/openings
+adjoining a cell" (the scoring language, Rulebook §9) from occupied cells
+along a 1 m cell's boundary — this works as long as the *source* SLAM
+resolution was fine enough to place occupied cells accurately relative to
+the 1 m grid lines (D-7a).
 
-## 4. `SurvivorDetection` (Drone → GCS)
+## 5. Survivor Tags — `/vision/survivors`
 
-One message per newly detected (or updated/confirmed) survivor.
+**Type:** custom (proposed — not a standard ROS message; needs a `.msg`
+file on the Jetson side, see D-13). Published on detection (and again on
+re-detection/confidence update for an existing survivor).
 
 ```jsonc
 {
-  "type": "survivor_detection",
-  "timestamp": "2026-08-24T10:16:01.881Z",
-  "survivor_id": "S3",          // stable id, so re-detections update rather than duplicate
-  "grid_ref": { "col": 7, "row": 5 },
-  "confidence": 0.88,
-  "status": "confirmed"         // "tentative" | "confirmed" — optional, if the detection pipeline supports staged confidence
+  "survivor_id": 3,             // stable int/string id — re-detections update, not duplicate; capped at 6 distinct ids
+  "x": 7.2,                     // meters, same origin/frame as /slam/map
+  "y": 5.4,
+  "confidence": 0.88
 }
 ```
 
-Capped at 6 distinct `survivor_id`s per the rules; the GCS should treat a
-7th distinct id as a data/integration bug to surface, not silently accept.
+The GCS is responsible for quantizing `(x, y)` into the shared 1 m grid
+cell (`floor((x - origin_x)/1.0)`, `floor((y - origin_y)/1.0)`) using the
+*same* `origin`/`resolution` as whatever `/slam/map` last reported — this
+keeps the Jetson-side message simple (raw meters) while guaranteeing tags
+and map stay aligned. A 7th distinct `survivor_id` should be treated as a
+data/integration bug to surface, not silently accepted (rules cap at 6).
 
-## 5. `LinkHealth` (Drone → GCS, optional/recommended)
+## 6. System Heartbeat — `/gcs/heartbeat`
 
-Not explicitly required by the rules for PS2 (see REQUIREMENTS.md Open
-Question #5) but cheap to add and valuable given the operator's only tools
-are "watch" and "abort."
+**Type:** custom, minimal (proposed: `std_msgs/Header` or an even simpler
+timestamp message). Published 1 Hz. Confirms the Jetson + websocket link
+is alive — this is the cheapest possible signal and should probably be
+the first thing rendered/tested end-to-end, before any other topic.
+
+Optionally paired with a richer `LinkHealth`-style message later if the
+drone-side stack can report more than just "alive" (e.g. last-message age
+per topic, computed client-side by the GCS instead if the Jetson doesn't
+provide it directly) — not required by the rules for PS2 (see
+REQUIREMENTS.md Open Question #5), but cheap value if added.
+
+## 7. Live Video — `/camera/image_raw/compressed` — deliberately NOT via rosbridge
+
+**Type:** would be `sensor_msgs/CompressedImage` if sent over ROS, but per
+**D-6, this should not share the rosbridge/websocket connection** with
+the topics above. Recommended instead: a separate transport (MJPEG-over-
+HTTP or WebRTC) served directly from the Jetson and consumed by the
+frontend's `<video>` element, independent of roslibjs/rosbridge. See
+[DECISIONS.md](DECISIONS.md) D-6 for the reasoning (base64+JSON overhead,
+and — more importantly — risk of delaying the Abort command behind queued
+video frames on a shared connection).
+
+## 8. Commands — `/gcs/command` (GCS → Jetson)
+
+**Type:** custom, minimal (proposed: `std_msgs/String`). Published by the
+frontend via roslibjs. **This is the entire operator command surface —
+exactly two values, nothing else:**
 
 ```jsonc
-{
-  "type": "link_health",
-  "timestamp": "2026-08-24T10:15:34.000Z",
-  "telemetry_link_ok": true,
-  "video_link_ok": true,
-  "last_telemetry_age_ms": 120,
-  "last_video_frame_age_ms": 90
-}
+{ "data": "start" }
+{ "data": "abort" }
 ```
 
-## 6. `StartMission` (GCS → Drone)
+See [DECISIONS.md](DECISIONS.md) D-10 — this channel is not yet defined
+by the drone-side topic table and needs a subscriber node on the Jetson
+side plus a latency test under realistic (video-present) link load before
+it can be considered done.
 
-The only mission-initiating command. Sent once, operator-triggered.
-
-```jsonc
-{
-  "type": "start_mission",
-  "timestamp": "2026-08-24T10:12:00.000Z",
-  "operator_confirmed": true
-}
-```
-
-## 7. `AbortMission` (GCS → Drone)
-
-The only other permitted command, at any point after start.
-
-```jsonc
-{
-  "type": "abort_mission",
-  "timestamp": "2026-08-24T10:20:15.500Z",
-  "reason": "operator_triggered"   // for the local mission log; not a rules requirement
-}
-```
-
-## 8. What Deliberately Does Not Exist
+## 9. What Deliberately Does Not Exist
 
 No schema is defined — anywhere, even as an unused/future placeholder —
 for: waypoint upload, path correction, map edit/correction, survivor tag
@@ -148,9 +154,11 @@ correction, or mission replanning. This omission is intentional (see
 seems to require one of these, treat that as a signal to revisit the
 architecture and the rules together, not as a routine schema addition.
 
-## 9. Video
+## 10. Superseded
 
-Not modeled as a discrete message — it is a continuous media stream on a
-separate channel (see COMMUNICATION.md §2.3), consumed directly by a
-`<video>`-style element rather than parsed frame-by-frame as JSON. Format
-TBD in [DECISIONS.md](DECISIONS.md).
+Earlier drafts of this document proposed a generic JSON `MapDelta` message
+(incremental cell updates) and a placeholder `(col, row)` grid convention
+with no defined origin. Both are superseded — see DECISIONS.md D-9 (full-
+grid republish is cheap enough at 1 m resolution) and D-7 (origin pinned
+to entry/exit point via `OccupancyGrid.info`). Kept here as a pointer, not
+reproduced, so there's one source of truth.

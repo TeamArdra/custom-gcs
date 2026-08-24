@@ -6,98 +6,226 @@ which is only things the documents *do* dictate). Each entry: the
 question, the current status, the leading option and why, and what would
 change it.
 
-Format inspired by lightweight ADRs. Add new entries at the top. Don't
-delete superseded entries — mark them superseded and say why, so future-us
-(or a teammate) can see the reasoning trail instead of just the current
-answer.
-
----
-
-## Open / Unresolved
-
-### D-1: Drone ↔ GCS transport & link technology
-**Status:** Open — blocked on drone-side hardware decisions and on
-resolving REQUIREMENTS.md Open Question #1 (is a private/local Wi-Fi link
-acceptable, given the rules ban "public Wi-Fi" specifically).
-**Options on the table:** dedicated telemetry radio (e.g., SiK/RFD900-class)
-for control/telemetry + a separate analog or digital video link; a single
-private WiFi (ad-hoc or team-hosted AP, no internet) link carrying both;
-a long-range digital link (e.g., ELRS-class) for control with a separate
-video transmitter.
-**Why not decided yet:** This is jointly owned with the drone-side
-Onboard Autonomy team (per COMMUNICATION.md §4) and depends on real
-constraints (weight budget within the 10 kg AUW cap, RF environment inside
-a netted arena, achievable range/bandwidth) that aren't yet known.
-**Revisit when:** drone-side hardware selection begins, or organiser
-clarification on the Wi-Fi question arrives.
-
-### D-2: Message protocol on the control/telemetry channel — custom vs. MAVLink
-**Status:** Open, leaning toward a custom lightweight protocol for the
-AirMouse-specific messages (map delta, survivor detection), possibly
-alongside MAVLink for generic vehicle telemetry/heartbeat if the drone-side
-flight stack is ArduPilot/PX4-based.
-**Why:** MAVLink has no native message for a 1m×1m occupancy grid delta or
-a survivor-detection-with-grid-reference — both would need custom
-messages/extensions regardless, so adopting MAVLink buys compatibility for
-generic telemetry but not for the mission-specific payloads. See
-COMMUNICATION.md §2.4 for the full tradeoff.
-**Revisit when:** the drone-side flight-control stack is chosen (a
-custom/bare-metal FC vs. ArduPilot/PX4 changes this calculus a lot).
-
-### D-3: Video protocol/format
-**Status:** Open. No resolution, latency, or codec requirement exists in
-the rules (REQUIREMENTS.md §10). Candidates: MJPEG-over-HTTP (simplest,
-most robust to a lossy/low-bandwidth link, higher latency), RTSP+H.264
-(better compression, more moving parts), WebRTC (lowest latency, most
-implementation complexity). Leaning toward starting with MJPEG for
-simplicity and revisiting if latency proves to be a problem in testing,
-since a robust-but-laggy feed beats a low-latency feed that drops out.
-**Revisit when:** the video transmitter hardware is chosen and real
-link-bandwidth numbers exist.
-
-### D-4: Grid coordinate labeling convention
-**Status:** Open — see REQUIREMENTS.md Open Question #3. Need an
-unambiguous convention (e.g., numeric `(col,row)` vs. chess-style `A1`)
-and an agreed origin (most likely the entry/exit point, since it's the one
-fixed reference both the team and the organisers know). Also need to
-determine how/whether the team's independently-built grid is checked
-against the organiser's reference grid at scoring time — not described in
-the rules, may need direct clarification from organisers.
-**Revisit when:** organiser clarification is available, or before the
-mapping/localisation schema (DATA_MODELS.md §3–4) is finalized for
-implementation.
-
-### D-5: Mission logging / replay format
-**Status:** Open, but leaning yes-build-it (see ARCHITECTURE.md §3.4). Not
-a competition requirement. If built: format is likely a flat, append-only
-local log (e.g., newline-delimited JSON of every message in
-DATA_MODELS.md, plus timestamps) that a `sim/` replay tool can play back.
-**Revisit when:** the Link/Bridge Layer's message types are stable enough
-to log without constant format churn.
+Format inspired by lightweight ADRs. Add new entries at the top of their
+section. Don't delete superseded entries — mark them superseded and say
+why, so future-us (or a teammate) can see the reasoning trail instead of
+just the current answer.
 
 ---
 
 ## Decided
 
-### D-0: Overall technology stack (Presentation: React/TypeScript in a
-native shell; Bridge: Python asyncio service; local transport: WebSocket +
-separate video stream)
-**Status:** Decided as the working default for Phase 0 planning purposes;
-**not yet implemented**, and open to revision before real implementation
-begins if the reasoning below stops holding.
-**Reasoning:** see [ARCHITECTURE.md](ARCHITECTURE.md) §5 for the full
-writeup. Summary: web rendering stack is the fastest path to a live
-map+video+status UI for a student team on this timeline; Python bridge
-minimizes translation distance to a likely ROS/Python-flavored drone-side
-stack and is easy to iterate on before the drone interface stabilizes;
-native shell (Tauri, with Electron and a plain local browser window as
-fallbacks) serves the offline-only constraint and enables local file
-access for mission logging.
+### D-1: Drone ↔ GCS transport & link technology
+**Status:** Decided (working default). Companion computer = **Jetson
+Nano**, flight controller = **Pixhawk 6x**, connected via **MAVLink**
+(through `mavros`). Jetson exposes ROS topics to the GCS via
+**`rosbridge_server`** (WebSocket, port 9090); the GCS frontend consumes
+them directly via **roslibjs**. The physical link between Jetson and GCS
+is a **local/private wireless link** (not internet, not "public Wi-Fi" —
+consistent with Rulebook §8.4/Annexure 2 §7 which bans public Wi-Fi/GSM/
+LTE/5G/internet specifically, not a private point-to-point link).
+**Residual open item:** the actual RF hardware for that local link (a
+dedicated 5 GHz WiFi bridge vs. an on-arena AP vs. something else) is not
+yet chosen, and range/interference inside a netted 15×15 m arena hasn't
+been tested. Video is deliberately **not** assumed to share this same
+rosbridge connection — see D-6.
+**Supersedes:** the original "Open" status of D-1 in earlier drafts of
+this log.
+
+### D-2: Message protocol on the control/telemetry channel
+**Status:** Decided (working default). **MAVLink** between Pixhawk and
+Jetson (via `mavros`, standard). **ROS topics over rosbridge** (JSON-RPC
+over WebSocket, consumed by roslibjs) between Jetson and GCS, using
+**standard ROS message types** wherever one exists (`nav_msgs/OccupancyGrid`,
+`sensor_msgs/BatteryState`, `geometry_msgs/PoseStamped`) plus two
+AirMouse-specific topics that still need explicit message-type definitions:
+`/vision/survivors` and `/mission/state` (currently only described in
+prose — see D-13, "Not Yet Specified" below).
+**Why this beats the earlier custom-vs-MAVLink framing:** using standard
+ROS/MAVLink messages where they already exist removes almost all custom
+protocol work; only the two mission-specific topics need a bespoke schema.
+**Supersedes:** the earlier "custom lightweight protocol vs. MAVLink"
+framing — the actual answer turned out to be "both, split by hop."
+
+### D-7: Grid coordinate convention
+**Status:** Decided (working default), pending confirmation with the
+drone-side team. Use `nav_msgs/OccupancyGrid`'s own `MapMetaData`
+(`resolution`, `origin`) as the authoritative coordinate frame: **origin
+pinned to the designated entry/exit point** (arena-relative, not GPS —
+GPS is unavailable indoors by rule). Map cells and `/vision/survivors`
+coordinates are both derived from this same `(origin, resolution)` pair,
+so they cannot drift apart from each other. The GCS-facing/scored
+representation is quantized to **1.0 m cells**: `cell = (floor((x -
+origin_x) / 1.0), floor((y - origin_y) / 1.0))`, matching the Rulebook §9
+scoring grid.
+**Resolves:** REQUIREMENTS.md Open Question #3 (labeling convention) —
+partially. The origin/resolution/quantization scheme is settled; the
+*display* labeling (numeric vs. chess-style) is still cosmetic and open.
+Still unresolved: how the team's independently-built grid is verified
+against the organiser's reference grid at scoring time — that's an
+organiser-side process question, not something we can settle unilaterally.
+**Supersedes:** earlier placeholder `(col, row)` indices in DATA_MODELS.md
+with no defined origin.
+
+### D-7a: SLAM working resolution vs. GCS-facing map resolution
+**Status:** Decided (working default). SLAM keeps whatever internal
+working resolution it needs for good localization/mapping quality (e.g.
+0.05–0.2 m) — that stays on the Jetson and is not sent to the GCS. A
+**separate, coarser `OccupancyGrid`** — fine enough to resolve wall/
+opening detail within a 1 m cell (recommend 0.25–0.5 m if wall thickness
+needs to be visible, or straight at 1.0 m if not) — is published on
+`/slam/map` specifically for the GCS.
+**Why:** keeps the websocket payload small. At true 1.0 m resolution over
+a ≤15×15 m arena, the full grid is **≤225 `int8` cells** — small enough to
+resend in full every cycle at 1–5 Hz with no meaningful bandwidth cost.
+**Revisit when:** the drone-side team has real SLAM output to test wall-
+detection fidelity against — if 1.0 m native resolution loses too much
+wall detail, move to 0.25–0.5 m internally and bin down to 1.0 m only for
+the GCS-facing topic.
+
+### D-9: Full-grid republish instead of incremental map deltas
+**Status:** Decided — **supersedes** the original `MapDelta`
+(incremental-cell-update) design in an earlier draft of
+[DATA_MODELS.md](DATA_MODELS.md). Given D-7a's resolution numbers, the
+whole map is cheap enough to send in full every publish (this is also how
+`nav_msgs/OccupancyGrid`-producing SLAM stacks naturally behave — they
+don't diff internally). Incremental deltas added complexity with no
+payoff at this data size and were dropped.
+**Revisit when:** if a much finer resolution is ever sent directly to the
+GCS (not currently planned per D-7a), full-grid resend may become
+expensive again and delta-encoding would be worth reconsidering.
+
+### D-13: `/vision/survivors` and `/mission/state` message shapes
+**Status:** Decided (working default) — see
+[DATA_MODELS.md](DATA_MODELS.md) §4/§1 for the concrete field lists. Not a
+standard ROS message for either; both need small custom `.msg` definitions
+on the Jetson side. Minimum required fields for survivors: stable id
+(so re-detections update rather than duplicate — capped at 6), grid
+coordinate (or raw x/y to be quantized per D-7), confidence. Minimum for
+mission state: an enum/string phase value, published on change.
+**Revisit when:** the drone-side team defines the actual `.msg` files —
+this entry should be updated to reference them by name once they exist.
+
+### D-0: Overall technology stack
+**Status:** Decided (working default, updated from the original Phase 0
+proposal in light of D-1/D-2). **Presentation Layer:** React + TypeScript
+UI in a native shell (Tauri, tentative; Electron/plain browser as
+fallbacks — see original reasoning below), connecting **directly** to
+`rosbridge_server` via **roslibjs** for telemetry, map, survivors, mission
+state, heartbeat, and outbound commands (D-10). **This removes the need
+for a separate custom Python bridge process for most of the system** — the
+original Phase 0 proposal assumed a hand-rolled bridge layer; rosbridge +
+roslibjs now fills that role for everything except video. A small
+service/process is still likely needed only for: (a) the **video** relay,
+which is deliberately kept off the rosbridge connection (D-6), and (b)
+optional local mission logging (D-5) — both much smaller in scope than
+the original bridge design, and Python remains a reasonable choice for
+either if needed.
+**Original reasoning (still holds for the parts that remain):** web
+rendering stack (Canvas/WebGL, `<video>`) is the fastest path to a live
+map+video+status UI for a student team on this timeline; native shell
+serves the offline-only constraint and enables local file access for
+mission logging.
 **Alternatives considered and set aside (not ruled out):** a native
-Qt/PySide desktop app (slower UI iteration, but worth reconsidering if the
-team has strong existing Qt experience); implementing the bridge inside
-Tauri's Rust backend directly (couples protocol iteration speed to Rust
-familiarity/build times).
-**Revisit when:** before writing the first line of application code —
-this whole decision should be explicitly re-confirmed with whoever is
-doing the implementation, not just inherited from Phase 0 planning.
+Qt/PySide desktop app; a hand-rolled bridge instead of rosbridge (rejected
+now that rosbridge/roslibjs covers the same ground with less custom code).
+**Revisit when:** before writing the first line of application code — this
+whole decision should be explicitly re-confirmed with whoever is doing the
+implementation, not just inherited from Phase 0 planning.
+
+---
+
+## Open / Unresolved
+
+### D-6: Video transport — keep it off rosbridge
+**Status:** Open, but with a strong recommendation: **do not** send
+`/camera/image_raw/compressed` through the same rosbridge/websocket
+connection as telemetry/map/command traffic.
+**Why:** rosbridge serializes `sensor_msgs/CompressedImage.data` (a byte
+array) as base64-in-JSON — real overhead — over a single connection shared
+with everything else. At 15–30 fps this risks two things: (1) saturating
+the link/serialization thread such that map/telemetry updates lag, and
+(2) worse, **delaying the Abort command** behind queued video traffic,
+which is a safety issue, not just a UX one, given Abort is one of exactly
+two things the operator is allowed to do. This is also consistent with
+[ARCHITECTURE.md](../docs/ARCHITECTURE.md) §5.3's original principle that
+video must never head-of-line-block time-critical control traffic.
+**Leading option:** a small, separate video path from the Jetson — e.g. an
+MJPEG-over-HTTP endpoint or a WebRTC stream — consumed directly by the
+frontend's `<video>` element, independent of `rosbridge_server`.
+**Revisit when:** real link-bandwidth numbers exist from hardware testing;
+if rosbridge genuinely keeps up under load, this recommendation could be
+relaxed, but should be *proven*, not assumed.
+
+### D-10: Command channel (Start / Abort), GCS → Jetson
+**Status:** Open — **not yet defined**, and this is the single most
+safety-critical wire in the system. The topic table the drone-side team
+provided is entirely Jetson→GCS (heartbeat, battery, pose, map, survivors,
+video, mission state); there is currently no defined path for the two
+things the operator is actually allowed to do.
+**Leading option:** a `/gcs/command` topic (`std_msgs/String`, values
+`"start"` / `"abort"`), published from the frontend via roslibjs,
+subscribed by a small command-handling node on the Jetson that forwards
+into the mission state machine / triggers the flight controller's abort
+failsafe.
+**Must be validated, not assumed:** latency of this specific topic under
+realistic link load (i.e., with video and map traffic present), given D-6.
+An abort command that arrives late because video was hogging the
+connection is a disqualification/safety-incident risk, not an edge case.
+**Revisit when:** before this is treated as "done" — needs an actual
+latency test, not just a working demo in quiet conditions.
+
+### D-11: Indoor pose source for `/mavros/local_position/pose`
+**Status:** Open — needs confirmation from the drone-side/flight-control
+subteam, informational for GCS design (affects how much we trust/display
+`position_confidence`). The rules forbid GPS/GNSS-based navigation
+indoors, so Pixhawk's EKF needs a substitute position source for
+`local_position/pose` to mean anything indoors — most likely SLAM pose
+(Jetson) → MAVLink `VISION_POSITION_ESTIMATE` → EKF fusion, via mavros's
+vision_pose plugin. If this pipeline isn't wired, the pose topic will
+drift or be meaningless indoors, and the GCS would be rendering garbage
+drone-position data without any way to know it.
+**GCS-side implication:** don't assume `/mavros/local_position/pose` is
+trustworthy by default — surface some notion of pose validity/confidence
+if the drone-side telemetry can provide it (ties to the `LinkHealth`
+concept in [DATA_MODELS.md](DATA_MODELS.md) §5).
+**Revisit when:** the flight-control subteam confirms the vision-pose
+fusion pipeline is implemented and tested.
+
+### D-12: Jetson Nano compute budget (informational, drone-side)
+**Status:** Open, not a GCS-repo decision, but worth logging because it
+directly affects what the GCS will observe (dropped/late messages look
+identical to a bad link regardless of root cause). Running SLAM +
+detection + video encode + `rosbridge_server` concurrently on a Jetson
+Nano (a 2019-era, comparatively weak board by current detection-model
+standards) is a real resource-contention risk.
+**Revisit when:** the drone-side team load-tests the full stack together,
+not just each component in isolation.
+
+### D-3: Video protocol/format — merged into D-6
+**Status:** Superseded by D-6 above, which now also settles *where* video
+goes (off rosbridge), not just its codec. Original framing (MJPEG vs.
+RTSP vs. WebRTC) is still the live sub-question once D-6's "separate
+path" is agreed — leaning MJPEG-over-HTTP first for simplicity/link
+robustness, revisit if latency is a problem in testing.
+
+### D-4: Grid coordinate labeling convention — mostly resolved by D-7
+**Status:** Mostly superseded by D-7 above (origin = entry/exit point,
+1.0 m quantization). What D-7 does *not* settle: the organiser-facing
+verification process for aligning the team's grid to the reference grid
+at scoring time — still genuinely unknown, likely needs a direct
+organiser clarification.
+
+### D-5: Mission logging / replay format
+**Status:** Open, still leaning yes-build-it (see
+[ARCHITECTURE.md](../docs/ARCHITECTURE.md) §3.4). Given D-0's update, this
+is now a smaller, more self-contained piece of work than originally
+scoped (no longer entangled with a general-purpose bridge process) — could
+plausibly even be a lightweight roslibjs subscriber-that-writes-to-disk
+running in the same Tauri app, rather than a separate Python service.
+Format: likely a flat, append-only local log (newline-delimited JSON of
+every message received/sent, with timestamps) that a `sim/` replay tool
+can play back.
+**Revisit when:** the topic/message schemas in
+[DATA_MODELS.md](DATA_MODELS.md) are stable enough to log without
+constant format churn.

@@ -26,8 +26,8 @@ hardware.
 
 | Component | Owns | Talks to |
 |---|---|---|
-| Flight Controller (FC) | Attitude control, motor output, low-level failsafes (battery, link-loss, geofence) | Onboard Autonomy System |
-| Onboard Autonomy System | SLAM/mapping, survivor detection fusion, grid localisation, exploration/path planning, mission state machine | FC, Video System, **GCS** (via Comm Link) |
+| Flight Controller (FC) — **Pixhawk 6x** | Attitude control, motor output, low-level failsafes (battery, link-loss, geofence) | Onboard Autonomy System, via MAVLink/`mavros` |
+| Onboard Autonomy System — **Jetson Nano**, running ROS + `rosbridge_server` | SLAM/mapping, survivor detection fusion, grid localisation, exploration/path planning, mission state machine | FC, Video System, **GCS** (via Comm Link) |
 | Mapping System | Occupancy/connectivity grid construction (logically part of Onboard Autonomy) | Onboard Autonomy → GCS |
 | Survivor Detection/Localisation System | Detects survivors, resolves to grid coordinate (logically part of Onboard Autonomy) | Onboard Autonomy → GCS |
 | Video System | Camera capture + encode | GCS (separate stream from telemetry) |
@@ -43,79 +43,81 @@ network, no tethers) most constrain design freedom.
 ## 2. The Drone ↔ GCS Interface (the one interface this repo must honor)
 
 Everything below crosses the "local wireless link" box in
-[ARCHITECTURE.md](ARCHITECTURE.md) §2. This is the interface this
-repository's Link/Bridge Layer implements the GCS side of.
+[ARCHITECTURE.md](ARCHITECTURE.md) §2. Per [DECISIONS.md](DECISIONS.md)
+D-1/D-2, this link is now a concrete, working default rather than fully
+open: **Jetson Nano** (companion computer, running ROS +
+`rosbridge_server`) ↔ **GCS frontend** (React, consuming ROS topics
+directly via **roslibjs** over WebSocket, port 9090). The Jetson itself
+talks to a **Pixhawk 6x** flight controller via **MAVLink**/`mavros` — that
+hop is internal to the drone side and out of this repo's scope (§3 below).
 
 ### 2.1 Channels
 
 Two logically separate channels, for the reasons in ARCHITECTURE.md §5.3
-(video must not block time-critical control/telemetry):
+(video must not block time-critical control/telemetry) — reinforced by
+DECISIONS.md D-6/D-10, which flags queued video delaying the Abort command
+as a safety issue, not just a UX one:
 
 1. **Control/Telemetry channel** — bidirectional, low-bandwidth,
-   latency-sensitive. Carries telemetry, map deltas, detection events,
-   mission status, and the two operator commands.
+   latency-sensitive. This is the `rosbridge_server` WebSocket connection
+   (port 9090). Carries mission status, telemetry, map, detection events,
+   heartbeat, and the two operator commands.
 2. **Video channel** — unidirectional (drone → GCS), high-bandwidth.
-   Carries the live camera feed.
-
-Whether these are two physically separate radios or two logical streams
-over one radio is an open engineering decision — see
-[DECISIONS.md](DECISIONS.md).
+   Carries the live camera feed. **Deliberately kept off the rosbridge
+   connection** (D-6) — a separate transport (leaning MJPEG-over-HTTP or
+   WebRTC, per D-3) served directly from the Jetson.
 
 ### 2.2 Message Types (Control/Telemetry channel)
 
-Schemas for each are in [DATA_MODELS.md](DATA_MODELS.md). Directions:
+Schemas for each are in [DATA_MODELS.md](DATA_MODELS.md). Topics and
+directions, reflecting the working ROS topic list (D-2, D-13):
 
-| Message | Direction | Required by rules? |
-|---|---|---|
-| `MissionStatus` | Drone → GCS | Yes — "mission progress and completion status" |
-| `TelemetryUpdate` (position/pose estimate, battery, flight state) | Drone → GCS | Yes — "drone position or estimated drone position" |
-| `MapDelta` (incremental 1m×1m grid cell updates) | Drone → GCS | Yes — "2D map...continuously updated" |
-| `SurvivorDetection` (grid ref, confidence, id) | Drone → GCS | Yes — "grid coordinate...containing each detected survivor" |
-| `LinkHealth` (comm/system health) | Drone → GCS | Not explicitly required for PS2 (see REQUIREMENTS.md Open Question #5); recommended anyway |
-| `StartMission` | GCS → Drone | Yes — the one non-abort permitted command |
-| `AbortMission` | GCS → Drone | Yes — the one abort/emergency-stop permitted command |
+| Topic | Type | Direction | Rate | Required by rules? |
+|---|---|---|---|---|
+| `/mission/state` | custom (`std_msgs/String` minimum) | Drone → GCS | On change | Yes — "mission progress and completion status" |
+| `/mavros/battery` | `sensor_msgs/BatteryState` | Drone → GCS | 1–2 Hz | Yes — vehicle health, feeds "mission status" |
+| `/mavros/local_position/pose` | `geometry_msgs/PoseStamped` | Drone → GCS | 10+ Hz | Yes — "drone position or estimated drone position" |
+| `/slam/map` | `nav_msgs/OccupancyGrid`, full grid each publish | Drone → GCS | 1–5 Hz | Yes — "2D map...continuously updated" |
+| `/vision/survivors` | custom (D-13) | Drone → GCS | On detection | Yes — "grid coordinate...containing each detected survivor" |
+| `/gcs/heartbeat` | custom, minimal | Drone → GCS | 1 Hz | Not explicitly required; recommended (link liveness) |
+| `/gcs/command` | custom (`std_msgs/String`, `"start"`/`"abort"`) | **GCS → Drone** | On operator action | Yes — the *only* two permitted operator actions |
 
 No other message type should exist on this channel. In particular: **no
 waypoint, no path correction, no map-edit, no tag-correction, no
-mission-replan message type is defined**, deliberately, per Design
+mission-replan message/topic is defined**, deliberately, per Design
 Principle 1 in [ARCHITECTURE.md](ARCHITECTURE.md). If a future need
 appears to add one, that is a signal to stop and re-check it against the
 rules before writing it, not a routine schema change.
 
+`/gcs/command` is currently the least-defined piece of this table — see
+DECISIONS.md D-10. It needs a subscriber node on the Jetson and a latency
+test under realistic (video-present) link load before it's considered
+done, given it carries the operator's abort authority.
+
 ### 2.3 Video Channel
 
-One direction, drone → GCS, continuous during flight. Format/protocol is
-an open engineering decision (see [DECISIONS.md](DECISIONS.md)) —
-candidates include an MJPEG stream, RTSP, or a WebRTC connection over the
-local link, depending on what the chosen radio/link hardware supports and
-what bandwidth is realistically available inside a netted 15 m × 15 m
-arena.
+One direction, drone → GCS, continuous during flight, **not** via
+`rosbridge_server`/roslibjs (D-6). Format/protocol still open (D-3) —
+leaning MJPEG-over-HTTP first for simplicity and robustness to a lossy
+link, WebRTC if latency proves to be a problem in testing.
 
-### 2.4 Transport / Protocol (open)
+### 2.4 Transport / Protocol
 
-Not decided. Two broad options, both consistent with "locally deployed
-communication systems, no external network":
+**Decided (working default), see DECISIONS.md D-1/D-2:** `mavros`/MAVLink
+for the Pixhawk↔Jetson hop (standard, out of this repo's scope); ROS
+topics over `rosbridge_server` + roslibjs for the Jetson↔GCS hop, using
+standard ROS message types wherever one exists and two small custom
+message types (`/vision/survivors`, `/mission/state`) where it doesn't.
+Video is intentionally routed around this same connection (§2.3).
 
-- **A generic point-to-point digital link** (e.g., a telemetry radio pair
-  or a private/local WiFi link — pending Open Question #1 in
-  REQUIREMENTS.md) carrying a custom lightweight message protocol (e.g.,
-  JSON or a compact binary framing) designed specifically around the
-  message types in §2.2.
-- **MAVLink** over the same class of link. MAVLink is explicitly
-  compatible with the rules (Rulebook §8.2 permits open-source protocols/
-  software) and is well-trodden for telemetry + command + video-adjacent
-  metadata, but it is designed around GPS-referenced, waypoint-style
-  missions and doesn't have a native message for "1m×1m occupancy grid
-  delta" or "survivor detection with grid reference" — those would need to
-  be custom MAVLink messages/extensions regardless. Reusing MAVLink's
-  existing messages for telemetry/heartbeat/battery/mode while defining
-  custom messages for map/survivor data is a middle path worth
-  considering once the drone-side stack (ArduPilot/PX4 vs. fully custom
-  autonomy) is chosen.
+Remaining open items on this decision (tracked in DECISIONS.md, not
+duplicated here): the physical RF hardware for the Jetson↔GCS local link
+(D-1's residual item), and whether rosbridge holds up under combined
+telemetry+map+command load once video is correctly kept off it (D-6).
 
-This decision is deferred to [DECISIONS.md](DECISIONS.md) and should be
-made jointly with whoever owns the drone-side Onboard Autonomy System, not
-unilaterally by the GCS side — the interface has two owners.
+This decision was made jointly with the drone-side/companion-computer
+team, per the interface having two owners (§4 below) — not unilaterally
+by the GCS side.
 
 ## 3. Interfaces Not Owned By This Repository (context only)
 
@@ -123,9 +125,10 @@ These exist on the drone side and are documented here only so the
 boundary is unambiguous — this repo does not implement or specify their
 internals, only what crosses into the Drone ↔ GCS interface above.
 
-- **FC ↔ Onboard Autonomy System**: however the drone-side team chooses
-  (e.g., MAVLink/ROS2 over a serial or internal network link between FC
-  and companion computer). Entirely a drone-side concern.
+- **FC ↔ Onboard Autonomy System**: **decided** — MAVLink via `mavros`,
+  between the Pixhawk 6x and the Jetson Nano (DECISIONS.md D-2). Entirely
+  a drone-side concern to implement; noted here only because it's the
+  source of the `/mavros/*` topics the GCS consumes.
 - **Onboard Autonomy ↔ Mapping System**: internal SLAM pipeline
   (algorithm unspecified by the rules). Drone-side concern; the GCS only
   sees its *output* via `MapDelta`.
