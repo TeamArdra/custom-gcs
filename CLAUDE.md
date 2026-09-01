@@ -86,6 +86,22 @@ Full writeup: `docs/ARCHITECTURE.md`. Summary:
   Reasoning and alternatives in `docs/ARCHITECTURE.md` §5 and
   `docs/DECISIONS.md` D-0.
 
+## Integration Checkpoints (read before touching the command/telemetry path)
+
+The path from the current software-only integration to a full autonomous
+mission is broken into 10 gated checkpoints, defined in
+`../CHECKPOINT/INTEGRATION_CHECKPOINTS.md` (sibling `CHECKPOINT/`
+directory at the workspace root, alongside this repo and
+`onboard-autonomy`). **Checkpoint 1 (GCS ↔ Autonomy integration via the
+real FastAPI API, currently IN PROGRESS) is this repo's checkpoint** —
+see `../CHECKPOINT/CURRENT_STATE.md` §0 for its current status before
+assuming it's closed. Checkpoints 2 onward are primarily
+`onboard-autonomy`'s responsibility (Jetson↔Pixhawk arming, flight
+control) but this repo's `start`/`abort` commands are the trigger for
+several of them (3, 4, 5, 10) — the architectural principle that the GCS
+never talks to the Pixhawk directly, only ever through the Jetson, is
+detailed there and must not be violated by any change here.
+
 ## Important Constraints
 
 These come directly from the rules (`docs/REQUIREMENTS.md`) and are
