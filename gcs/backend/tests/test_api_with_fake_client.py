@@ -22,24 +22,72 @@ def test_telemetry_is_all_none_before_any_data_arrives():
     client, _ = make_client()
     body = client.get("/api/telemetry").json()
     assert body["mission_state"] is None
-    assert body["battery"] == {"voltage": None, "percentage": None}
+    assert body["battery"] == {"voltage": None, "current": None, "percentage": None}
     assert body["pose"]["position"] is None
+    assert body["fcu"] == {
+        "connected": None,
+        "armed": None,
+        "guided": None,
+        "mode": None,
+        "system_status": None,
+    }
+    assert body["velocity"] is None
+    assert body["attitude"] is None
+    assert body["gps"] is None
+    assert body["statustext"] == []
+    assert body["heartbeat_age_s"] is None
 
 
 def test_telemetry_reflects_latest_cached_values():
     client, fake = make_client()
     fake.set_latest("/mission/state", {"data": "searching"})
-    fake.set_latest("/mavros/battery", {"voltage": 15.2, "percentage": 0.62})
+    fake.set_latest("/mavros/battery", {"voltage": 15.2, "current": 2.1, "percentage": 0.62})
     fake.set_latest(
         "/mavros/local_position/pose",
         {"pose": {"position": {"x": 3.0, "y": 4.0, "z": 0.0}}},
     )
+    fake.set_latest(
+        "/mavros/state",
+        {"connected": True, "armed": True, "guided": False, "mode": "STABILIZE", "system_status": 4},
+    )
+    fake.set_latest(
+        "/mavros/local_position/velocity_local",
+        {"twist": {"linear": {"x": 0.1, "y": 0.0, "z": 0.0}}},
+    )
+    fake.set_latest(
+        "/mavros/global_position/global",
+        {"status": {"status": 0}, "satellites_visible": 8, "latitude": 1.0, "longitude": 2.0, "altitude": 3.0},
+    )
+    fake.set_latest(
+        "/mavros/imu/data",
+        {"orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}},
+    )
+    fake.set_statustext_history([{"severity": 6, "text": "Arming Checks Disabled"}])
+    fake.set_age_s("/gcs/heartbeat", 0.4)
 
     body = client.get("/api/telemetry").json()
 
     assert body["mission_state"] == "searching"
-    assert body["battery"] == {"voltage": 15.2, "percentage": 0.62}
+    assert body["battery"] == {"voltage": 15.2, "current": 2.1, "percentage": 0.62}
     assert body["pose"]["position"] == {"x": 3.0, "y": 4.0, "z": 0.0}
+    assert body["fcu"] == {
+        "connected": True,
+        "armed": True,
+        "guided": False,
+        "mode": "STABILIZE",
+        "system_status": 4,
+    }
+    assert body["velocity"] == {"x": 0.1, "y": 0.0, "z": 0.0}
+    assert body["attitude"] == {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}
+    assert body["gps"] == {
+        "fix_status": 0,
+        "satellites_visible": 8,
+        "latitude": 1.0,
+        "longitude": 2.0,
+        "altitude": 3.0,
+    }
+    assert body["statustext"] == [{"severity": 6, "text": "Arming Checks Disabled"}]
+    assert body["heartbeat_age_s"] == 0.4
 
 
 def test_map_snapshot_flattens_occupancy_grid():

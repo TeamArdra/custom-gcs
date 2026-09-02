@@ -13,7 +13,9 @@ class FakeRosBridgeClient:
     def __init__(self, connected: bool = True) -> None:
         self.is_connected = connected
         self._latest: dict[str, Any] = {}
+        self._ages: dict[str, float] = {}
         self._survivors: list[dict] = []
+        self._statustext: list[dict] = []
         self.published_commands: list[str] = []
 
     def set_latest(self, topic: str, message: dict) -> None:
@@ -22,11 +24,23 @@ class FakeRosBridgeClient:
     def latest(self, topic: str) -> Any:
         return self._latest.get(topic)
 
+    def set_age_s(self, topic: str, age_s: float | None) -> None:
+        self._ages[topic] = age_s
+
+    def age_s(self, topic: str) -> float | None:
+        return self._ages.get(topic)
+
     def set_survivors(self, survivors: list[dict]) -> None:
         self._survivors = survivors
 
     def survivors(self) -> list[dict]:
         return self._survivors
+
+    def set_statustext_history(self, history: list[dict]) -> None:
+        self._statustext = history
+
+    def statustext_history(self) -> list[dict]:
+        return self._statustext
 
     def publish_command(self, command: str) -> None:
         if command not in VALID_COMMANDS:

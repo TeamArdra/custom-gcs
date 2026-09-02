@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NIDAR AirMouse — Operator Panel</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #131a22; --border: #26313d; --text: #e6edf3;
+    --dim: #8b98a5; --ok: #2ea043; --bad: #da3633; --warn: #d29922; --accent: #388bfd;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, Segoe UI, Roboto, sans-serif; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); margin: 0 0 10px; }
+  .row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #1d252d; font-size: 13px; }
+  .row:last-child { border-bottom: none; }
+  .row .k { color: var(--dim); }
+  .row .v { font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.ok { background: rgba(46,160,67,0.15); color: var(--ok); }
+  .pill.bad { background: rgba(218,54,51,0.15); color: var(--bad); }
+  .pill.warn { background: rgba(210,153,34,0.15); color: var(--warn); }
+  .pill.unknown { background: rgba(139,148,165,0.15); color: var(--dim); }
+  button { font: inherit; padding: 10px 16px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer; font-weight: 600; }
+  .btn-start { background: var(--ok); color: #fff; border-color: var(--ok); }
+  .btn-stop { background: var(--bad); color: #fff; border-color: var(--bad); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; }
+  .bench-note { margin-top: 10px; padding: 8px 10px; background: rgba(210,153,34,0.12); border: 1px solid rgba(210,153,34,0.4); border-radius: 6px; color: var(--warn); font-size: 12px; font-weight: 600; }
+  .statustext { max-height: 120px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 12px; }
+  .statustext div { padding: 2px 0; border-bottom: 1px solid #1d252d; }
+  .toast { position: fixed; bottom: 16px; right: 16px; background: var(--panel); border: 1px solid var(--border); padding: 10px 14px; border-radius: 6px; font-size: 13px; max-width: 320px; }
+  .stale { opacity: 0.5; }
+</style>
+</head>
+<body>
+  <h1>NIDAR AirMouse — Operator Panel</h1>
+  <div class="sub" id="lastUpdate">connecting...</div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Connection</h2>
+      <div class="row"><span class="k">GCS &harr; Jetson (rosbridge)</span><span class="v" id="connJetson">-</span></div>
+      <div class="row"><span class="k">Jetson &harr; Pixhawk (FCU)</span><span class="v" id="connFcu">-</span></div>
+      <div class="row"><span class="k">Heartbeat age</span><span class="v" id="heartbeatAge">-</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Flight</h2>
+      <div class="row"><span class="k">Armed</span><span class="v" id="armed">-</span></div>
+      <div class="row"><span class="k">Mode</span><span class="v" id="mode">-</span></div>
+      <div class="row"><span class="k">System status</span><span class="v" id="sysStatus">-</span></div>
+      <div class="row"><span class="k">Guided</span><span class="v" id="guided">-</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Mission</h2>
+      <div class="row"><span class="k">State</span><span class="v" id="missionState">-</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Controls</h2>
+      <div class="controls">
+        <button class="btn-start" id="btnStart">START</button>
+        <button class="btn-stop" id="btnStop">STOP / ABORT</button>
+      </div>
+      <div class="bench-note">
+        BENCH TEST — PROPS REMOVED. START arms the vehicle through the
+        Jetson mission logic (real ARM, via MAVROS) purely to demonstrate
+        the command chain — it is not a flight/throttle control. No
+        motor-throttle or setpoint interface is exposed here. ARM/DISARM
+        are not separately exposed as operator buttons: the only operator
+        command surface is START/ABORT, per the competition's minimal
+        command-surface rule.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Battery</h2>
+      <div class="row"><span class="k">Voltage</span><span class="v" id="battVoltage">-</span></div>
+      <div class="row"><span class="k">Current</span><span class="v" id="battCurrent">-</span></div>
+      <div class="row"><span class="k">Percentage</span><span class="v" id="battPct">-</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Position / Velocity</h2>
+      <div class="row"><span class="k">Local position (x,y,z)</span><span class="v" id="position">-</span></div>
+      <div class="row"><span class="k">Velocity (x,y,z)</span><span class="v" id="velocity">-</span></div>
+      <div class="row"><span class="k">GPS fix</span><span class="v" id="gpsFix">-</span></div>
+      <div class="row"><span class="k">Satellites</span><span class="v" id="gpsSats">-</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Attitude</h2>
+      <div class="row"><span class="k">Orientation quaternion (x,y,z,w)</span><span class="v" id="attitude">-</span></div>
+    </div>
+
+    <div class="panel" style="grid-column: 1 / -1;">
+      <h2>FCU status text / warnings</h2>
+      <div class="statustext" id="statustext">-</div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const fmtNum = (n, d = 2) => (typeof n === 'number' ? n.toFixed(d) : '—');
+    const fmtBool = (b, okLabel = 'YES', badLabel = 'NO') => {
+      if (b === null || b === undefined) return '<span class="pill unknown">UNKNOWN</span>';
+      return b ? `<span class="pill ok">${okLabel}</span>` : `<span class="pill bad">${badLabel}</span>`;
+    };
+    const fmtConn = (b) => {
+      if (b === null || b === undefined) return '<span class="pill unknown">UNKNOWN</span>';
+      return b ? '<span class="pill ok">CONNECTED</span>' : '<span class="pill bad">DISCONNECTED</span>';
+    };
+
+    let busy = false;
+
+    async function refresh() {
+      try {
+        const res = await fetch('/api/telemetry');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const t = await res.json();
+        render(t);
+        $('lastUpdate').textContent = 'last updated ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        $('lastUpdate').textContent = 'telemetry fetch failed: ' + e.message;
+      }
+    }
+
+    function render(t) {
+      $('connJetson').innerHTML = fmtConn(t.connected);
+      $('connFcu').innerHTML = fmtConn(t.fcu && t.fcu.connected);
+      $('heartbeatAge').textContent = t.heartbeat_age_s == null ? 'no heartbeat received' : fmtNum(t.heartbeat_age_s, 1) + ' s';
+
+      $('armed').innerHTML = fmtBool(t.fcu && t.fcu.armed, 'ARMED', 'DISARMED');
+      $('mode').textContent = (t.fcu && t.fcu.mode) || '—';
+      $('sysStatus').textContent = (t.fcu && t.fcu.system_status != null) ? t.fcu.system_status : '—';
+      $('guided').innerHTML = fmtBool(t.fcu && t.fcu.guided);
+
+      $('missionState').textContent = t.mission_state || '—';
+
+      $('battVoltage').textContent = t.battery && t.battery.voltage != null ? fmtNum(t.battery.voltage) + ' V' : 'unavailable';
+      $('battCurrent').textContent = t.battery && t.battery.current != null ? fmtNum(t.battery.current) + ' A' : 'unavailable';
+      $('battPct').textContent = t.battery && t.battery.percentage != null ? fmtNum(t.battery.percentage * 100, 0) + ' %' : 'unavailable';
+
+      const p = t.pose && t.pose.position;
+      $('position').textContent = p ? `${fmtNum(p.x)}, ${fmtNum(p.y)}, ${fmtNum(p.z)}` : 'unavailable';
+      const v = t.velocity;
+      $('velocity').textContent = v ? `${fmtNum(v.x)}, ${fmtNum(v.y)}, ${fmtNum(v.z)}` : 'unavailable';
+      $('gpsFix').textContent = t.gps && t.gps.fix_status != null ? t.gps.fix_status : 'unavailable';
+      $('gpsSats').textContent = t.gps && t.gps.satellites_visible != null ? t.gps.satellites_visible : 'unavailable';
+
+      const a = t.attitude;
+      $('attitude').textContent = a ? `${fmtNum(a.x, 3)}, ${fmtNum(a.y, 3)}, ${fmtNum(a.z, 3)}, ${fmtNum(a.w, 3)}` : 'unavailable';
+
+      const st = t.statustext || [];
+      $('statustext').innerHTML = st.length
+        ? st.slice().reverse().map(m => `<div>[sev ${m.severity}] ${m.text}</div>`).join('')
+        : 'no messages received';
+    }
+
+    async function sendCommand(command) {
+      if (busy) return;
+      busy = true;
+      $('btnStart').disabled = true;
+      $('btnStop').disabled = true;
+      try {
+        const res = await fetch(`/api/command/${command}`, { method: 'POST' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        await refresh();
+      } catch (e) {
+        alert(command.toUpperCase() + ' failed: ' + e.message);
+      } finally {
+        busy = false;
+        $('btnStart').disabled = false;
+        $('btnStop').disabled = false;
+      }
+    }
+
+    $('btnStart').addEventListener('click', () => sendCommand('start'));
+    $('btnStop').addEventListener('click', () => sendCommand('abort'));
+
+    refresh();
+    setInterval(refresh, 1000);
+  </script>
+</body>
+</html>

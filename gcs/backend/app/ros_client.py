@@ -14,6 +14,7 @@ rather than assuming any particular event loop.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 
 import roslibpy
@@ -26,10 +27,24 @@ SURVIVORS_TOPIC = "/vision/survivors"
 HEARTBEAT_TOPIC = "/gcs/heartbeat"
 COMMAND_TOPIC = "/gcs/command"
 
-# Declared ROS types per docs/DATA_MODELS.md. These are metadata only as
-# far as sim/rosbridge_sim is concerned (it doesn't validate them), but
-# matter once this connects to a real rosbridge_server backed by an
-# actual ROS graph.
+# Read-only FCU telemetry, subscribed directly via rosbridge -- same
+# pattern already used for BATTERY_TOPIC/POSE_TOPIC above (both already
+# read straight from mavros topics). This does NOT give the GCS any new
+# command surface: every topic below is a subscription, never published
+# to, and the only two things this client ever publishes are "start"/
+# "abort" on COMMAND_TOPIC. See CHECKPOINT/INTEGRATION_CHECKPOINTS.md --
+# the Jetson/mavros remain the only things that ever command the Pixhawk.
+FCU_STATE_TOPIC = "/mavros/state"
+STATUSTEXT_TOPIC = "/mavros/statustext/recv"
+VELOCITY_TOPIC = "/mavros/local_position/velocity_local"
+GPS_TOPIC = "/mavros/global_position/global"
+IMU_TOPIC = "/mavros/imu/data"
+
+# Declared ROS types per docs/DATA_MODELS.md (plus the mavros telemetry
+# topics above, typed per the real mavros/ArduCopter message set). These
+# are metadata only as far as sim/rosbridge_sim is concerned (it doesn't
+# validate them), but matter once this connects to a real rosbridge_server
+# backed by an actual ROS graph.
 _SUBSCRIBED_TOPIC_TYPES = {
     MISSION_STATE_TOPIC: "std_msgs/String",
     BATTERY_TOPIC: "sensor_msgs/BatteryState",
@@ -37,9 +52,19 @@ _SUBSCRIBED_TOPIC_TYPES = {
     MAP_TOPIC: "nav_msgs/OccupancyGrid",
     SURVIVORS_TOPIC: "nidar_airmouse/SurvivorDetection",
     HEARTBEAT_TOPIC: "std_msgs/Header",
+    FCU_STATE_TOPIC: "mavros_msgs/State",
+    STATUSTEXT_TOPIC: "mavros_msgs/StatusText",
+    VELOCITY_TOPIC: "geometry_msgs/TwistStamped",
+    GPS_TOPIC: "sensor_msgs/NavSatFix",
+    IMU_TOPIC: "sensor_msgs/Imu",
 }
 _COMMAND_TOPIC_TYPE = "std_msgs/String"
 VALID_COMMANDS = ("start", "abort")
+
+# Rolling history of recent FCU status-text lines, newest last -- mirrors
+# onboard-autonomy/flight_command.py's own STATUSTEXT history so the GCS
+# can show recent warnings/failures, not just the single latest line.
+_STATUSTEXT_HISTORY = 10
 
 
 class RosBridgeClient:
@@ -50,7 +75,9 @@ class RosBridgeClient:
         self._ros = roslibpy.Ros(host=host, port=port)
         self._lock = threading.Lock()
         self._latest: dict[str, Any] = {}
+        self._last_seen: dict[str, float] = {}
         self._survivors: dict[int, dict] = {}
+        self._statustext_history: list[dict] = []
         self._subscriptions: list[roslibpy.Topic] = []
         self._command_topic: roslibpy.Topic | None = None
 
@@ -75,8 +102,13 @@ class RosBridgeClient:
     def _make_handler(self, topic: str):
         def handler(message: dict) -> None:
             with self._lock:
+                self._last_seen[topic] = time.time()
                 if topic == SURVIVORS_TOPIC:
                     self._survivors[message["survivor_id"]] = message
+                elif topic == STATUSTEXT_TOPIC:
+                    self._statustext_history.append(message)
+                    if len(self._statustext_history) > _STATUSTEXT_HISTORY:
+                        self._statustext_history.pop(0)
                 else:
                     self._latest[topic] = message
 
@@ -90,9 +122,22 @@ class RosBridgeClient:
         with self._lock:
             return self._latest.get(topic)
 
+    def age_s(self, topic: str) -> float | None:
+        """Seconds since the last message on `topic` was received, or
+        None if none has ever arrived -- lets callers distinguish "no
+        data yet" from "data, but stale" rather than just reporting the
+        last cached value forever."""
+        with self._lock:
+            last = self._last_seen.get(topic)
+        return None if last is None else time.time() - last
+
     def survivors(self) -> list[dict]:
         with self._lock:
             return sorted(self._survivors.values(), key=lambda s: s["survivor_id"])
+
+    def statustext_history(self) -> list[dict]:
+        with self._lock:
+            return list(self._statustext_history)
 
     def publish_command(self, command: str) -> None:
         """The entire GCS -> drone command surface. Deliberately accepts

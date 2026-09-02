@@ -16,22 +16,42 @@ docs/REQUIREMENTS.md §6 and docs/CLAUDE.md "Important Constraints" §1.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .config import Settings, get_settings
-from .ros_client import BATTERY_TOPIC, MAP_TOPIC, MISSION_STATE_TOPIC, POSE_TOPIC, RosBridgeClient
+from .ros_client import (
+    BATTERY_TOPIC,
+    FCU_STATE_TOPIC,
+    GPS_TOPIC,
+    HEARTBEAT_TOPIC,
+    IMU_TOPIC,
+    MAP_TOPIC,
+    MISSION_STATE_TOPIC,
+    POSE_TOPIC,
+    VELOCITY_TOPIC,
+    RosBridgeClient,
+)
 from .schemas import (
+    AttitudeResponse,
     BatteryResponse,
     CommandResponse,
+    FcuStateResponse,
+    GpsResponse,
     HealthResponse,
     MapResponse,
     PoseResponse,
     PositionResponse,
+    StatusTextResponse,
     SurvivorResponse,
     TelemetryResponse,
+    VelocityResponse,
 )
+
+_FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
 
 def create_app(client: RosBridgeClient | None = None, settings: Settings | None = None) -> FastAPI:
@@ -81,15 +101,47 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
         state_msg = ros_client.latest(MISSION_STATE_TOPIC) or {}
         battery_msg = ros_client.latest(BATTERY_TOPIC) or {}
         pose_msg = ros_client.latest(POSE_TOPIC) or {}
+        fcu_msg = ros_client.latest(FCU_STATE_TOPIC) or {}
+        velocity_msg = ros_client.latest(VELOCITY_TOPIC) or {}
+        gps_msg = ros_client.latest(GPS_TOPIC) or {}
+        imu_msg = ros_client.latest(IMU_TOPIC) or {}
         position = (pose_msg.get("pose") or {}).get("position")
+        linear_velocity = (velocity_msg.get("twist") or {}).get("linear")
+        orientation = imu_msg.get("orientation")
+        gps_status = gps_msg.get("status") or {}
 
         return TelemetryResponse(
             connected=ros_client.is_connected,
             mission_state=state_msg.get("data"),
+            fcu=FcuStateResponse(
+                connected=fcu_msg.get("connected"),
+                armed=fcu_msg.get("armed"),
+                guided=fcu_msg.get("guided"),
+                mode=fcu_msg.get("mode"),
+                system_status=fcu_msg.get("system_status"),
+            ),
             battery=BatteryResponse(
-                voltage=battery_msg.get("voltage"), percentage=battery_msg.get("percentage")
+                voltage=battery_msg.get("voltage"),
+                current=battery_msg.get("current"),
+                percentage=battery_msg.get("percentage"),
             ),
             pose=PoseResponse(position=PositionResponse(**position) if position else None),
+            velocity=VelocityResponse(**linear_velocity) if linear_velocity else None,
+            attitude=AttitudeResponse(**orientation) if orientation else None,
+            gps=GpsResponse(
+                fix_status=gps_status.get("status"),
+                satellites_visible=gps_msg.get("satellites_visible"),
+                latitude=gps_msg.get("latitude"),
+                longitude=gps_msg.get("longitude"),
+                altitude=gps_msg.get("altitude"),
+            )
+            if gps_msg
+            else None,
+            statustext=[
+                StatusTextResponse(severity=m.get("severity"), text=m.get("text"))
+                for m in ros_client.statustext_history()
+            ],
+            heartbeat_age_s=ros_client.age_s(HEARTBEAT_TOPIC),
         )
 
     @app.get("/api/map", response_model=MapResponse, tags=["map"])
@@ -118,6 +170,15 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
     def abort_mission() -> CommandResponse:
         ros_client.publish_command("abort")
         return CommandResponse(status="sent", command="abort")
+
+    # Minimal static operator UI, mounted at /ui (not /) so it can never
+    # intercept an unmatched API path -- StaticFiles returns 405 for
+    # non-GET/HEAD requests to anything under its mount, which would
+    # otherwise shadow test_no_route_exists_beyond_the_documented_command_surface's
+    # 404 expectation for forbidden paths if mounted at "/". Calls this
+    # same API over HTTP, nothing else -- see gcs/frontend/.
+    if _FRONTEND_DIR.is_dir():
+        app.mount("/ui", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
 
     return app
 
