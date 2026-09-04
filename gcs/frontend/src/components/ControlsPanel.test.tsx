@@ -30,7 +30,7 @@ describe("ControlsPanel", () => {
     expect(spy).toHaveBeenCalledWith("abort");
   });
 
-  it("disables both buttons while a request is in flight", async () => {
+  it("disables START while its own request is in flight, and re-enables after", async () => {
     let resolveCommand: (v: { status: string; command: string }) => void = () => {};
     vi.spyOn(api, "postCommand").mockReturnValue(
       new Promise((resolve) => {
@@ -40,18 +40,71 @@ describe("ControlsPanel", () => {
     render(<ControlsPanel />);
 
     const startBtn = screen.getByRole("button", { name: "START" });
-    const abortBtn = screen.getByRole("button", { name: "STOP / ABORT" });
 
     fireEvent.click(startBtn);
 
     await waitFor(() => expect(startBtn).toBeDisabled());
-    expect(abortBtn).toBeDisabled();
 
     await act(async () => {
       resolveCommand({ status: "ok", command: "start" });
     });
     await waitFor(() => expect(startBtn).not.toBeDisabled());
+  });
+
+  it("never disables ABORT because of a pending START -- ABORT fires immediately regardless", async () => {
+    let resolveStart: (v: { status: string; command: string }) => void = () => {};
+    const spy = vi.spyOn(api, "postCommand").mockImplementation((command) => {
+      if (command === "start") {
+        return new Promise((resolve) => {
+          resolveStart = resolve;
+        });
+      }
+      return Promise.resolve({ status: "ok", command });
+    });
+    render(<ControlsPanel />);
+
+    const startBtn = screen.getByRole("button", { name: "START" });
+    const abortBtn = screen.getByRole("button", { name: "STOP / ABORT" });
+
+    fireEvent.click(startBtn);
+    await waitFor(() => expect(startBtn).toBeDisabled());
+
+    // ABORT must stay enabled and fire immediately, without waiting for
+    // the still-pending START request to resolve.
     expect(abortBtn).not.toBeDisabled();
+    await act(async () => {
+      fireEvent.click(abortBtn);
+    });
+    expect(spy).toHaveBeenCalledWith("abort");
+
+    await act(async () => {
+      resolveStart({ status: "ok", command: "start" });
+    });
+    await waitFor(() => expect(startBtn).not.toBeDisabled());
+  });
+
+  it("disables ABORT only while its own request is in flight, and re-enables after", async () => {
+    let resolveAbort: (v: { status: string; command: string }) => void = () => {};
+    vi.spyOn(api, "postCommand").mockReturnValue(
+      new Promise((resolve) => {
+        resolveAbort = resolve;
+      }),
+    );
+    render(<ControlsPanel />);
+
+    const startBtn = screen.getByRole("button", { name: "START" });
+    const abortBtn = screen.getByRole("button", { name: "STOP / ABORT" });
+
+    fireEvent.click(abortBtn);
+
+    await waitFor(() => expect(abortBtn).toBeDisabled());
+    // START must not be disabled by ABORT's in-flight state either.
+    expect(startBtn).not.toBeDisabled();
+
+    await act(async () => {
+      resolveAbort({ status: "ok", command: "abort" });
+    });
+    await waitFor(() => expect(abortBtn).not.toBeDisabled());
   });
 
   it("shows an inline error on command failure, without throwing", async () => {
@@ -63,6 +116,21 @@ describe("ControlsPanel", () => {
     });
 
     expect(await screen.findByText(/ABORT failed: HTTP 503/)).toBeInTheDocument();
+  });
+
+  it("keeps both START and ABORT error messages visible when both fail close together", async () => {
+    vi.spyOn(api, "postCommand").mockImplementation((command) =>
+      Promise.reject(new Error(`HTTP 503 (${command})`)),
+    );
+    render(<ControlsPanel />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "START" }));
+      fireEvent.click(screen.getByRole("button", { name: "STOP / ABORT" }));
+    });
+
+    expect(await screen.findByText(/START failed: HTTP 503 \(start\)/)).toBeInTheDocument();
+    expect(await screen.findByText(/ABORT failed: HTTP 503 \(abort\)/)).toBeInTheDocument();
   });
 
   it("does not render any confirmation control before ABORT", () => {

@@ -11,10 +11,24 @@ import type { Command } from "../types";
 // added friction before an abort command is a safety regression, not a
 // UX nicety.
 export default function ControlsPanel() {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Independent busy state per button, deliberately -- a slow/hung START
+  // request must never disable ABORT. See custom-gcs/docs/DECISIONS.md
+  // D-10 and onboard-autonomy/CLAUDE.md Hard Safety Rule 2 ("Abort must
+  // preempt everything ... immediately, regardless of what else is
+  // running"). Do not collapse these back into one shared `busy` flag.
+  const [startBusy, setStartBusy] = useState(false);
+  const [abortBusy, setAbortBusy] = useState(false);
+  // Independent error state per button too -- otherwise a START failure
+  // and an ABORT failure landing close together could have one message
+  // overwrite the other before the operator reads it, even though each
+  // is already prefixed with the command name. Mirrors the busy split.
+  const [startError, setStartError] = useState<string | null>(null);
+  const [abortError, setAbortError] = useState<string | null>(null);
 
   async function send(command: Command) {
+    const busy = command === "start" ? startBusy : abortBusy;
+    const setBusy = command === "start" ? setStartBusy : setAbortBusy;
+    const setError = command === "start" ? setStartError : setAbortError;
     if (busy) return;
     setBusy(true);
     setError(null);
@@ -33,7 +47,7 @@ export default function ControlsPanel() {
         <button
           type="button"
           className="font-semibold px-4 py-2.5 rounded-md border border-ok bg-ok text-white disabled:opacity-40 disabled:cursor-not-allowed"
-          disabled={busy}
+          disabled={startBusy}
           onClick={() => send("start")}
         >
           START
@@ -41,14 +55,15 @@ export default function ControlsPanel() {
         <button
           type="button"
           className="font-semibold px-4 py-2.5 rounded-md border border-bad bg-bad text-white disabled:opacity-40 disabled:cursor-not-allowed"
-          disabled={busy}
+          disabled={abortBusy}
           onClick={() => send("abort")}
         >
           STOP / ABORT
         </button>
       </div>
 
-      {error && <div className="mt-2.5 text-bad text-xs font-semibold">{error}</div>}
+      {startError && <div className="mt-2.5 text-bad text-xs font-semibold">{startError}</div>}
+      {abortError && <div className="mt-2.5 text-bad text-xs font-semibold">{abortError}</div>}
 
       <div className="mt-2.5 px-2.5 py-2 bg-warn/10 border border-warn/40 rounded-md text-warn text-xs font-semibold">
         BENCH TEST — PROPS REMOVED. START arms the vehicle through the
