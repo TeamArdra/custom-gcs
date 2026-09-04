@@ -164,24 +164,37 @@ def test_start_command_reports_sent_even_when_ros_client_reports_disconnected():
     assert fake.published_commands == ["start"]
 
 
-def test_command_route_surfaces_a_server_error_when_the_downstream_publish_fails():
+def test_command_route_surfaces_a_structured_503_when_the_downstream_publish_fails():
     """Exercises the one error path publish_command can actually raise in
     production: RuntimeError("not connected to rosbridge") when the
-    RosBridgeClient was never connected (see app/ros_client.py). Neither
-    route wraps ros_client.publish_command() in a try/except, so FastAPI's
-    default unhandled-exception handling applies -- a bare 500 with no
-    CommandResponse body, not a structured error the frontend could
-    special-case. Uses raise_server_exceptions=False so this test observes
-    the real HTTP response a browser would get, instead of the exception
-    propagating into the test process the way TestClient does by default."""
+    RosBridgeClient was never connected (see app/ros_client.py). Both
+    routes now wrap ros_client.publish_command() in a try/except that
+    re-raises as fastapi.HTTPException(503, ...), so the operator gets a
+    structured, actionable {"detail": ...} body distinguishing "not
+    connected to the drone" from any other server-side bug, instead of an
+    opaque bare 500 (see docs/DECISIONS.md D-10 on abort reliability)."""
     fake = FakeRosBridgeClient()
     fake.fail_publish_with(RuntimeError("not connected to rosbridge"))
     app = create_app(client=fake)
-    client = TestClient(app, raise_server_exceptions=False)
+    client = TestClient(app)
 
     resp = client.post("/api/command/abort")
 
-    assert resp.status_code == 500
+    assert resp.status_code == 503
+    assert "not connected to rosbridge" in resp.json()["detail"]
+    assert fake.published_commands == []
+
+
+def test_start_command_also_surfaces_a_structured_503_when_disconnected():
+    fake = FakeRosBridgeClient()
+    fake.fail_publish_with(RuntimeError("not connected to rosbridge"))
+    app = create_app(client=fake)
+    client = TestClient(app)
+
+    resp = client.post("/api/command/start")
+
+    assert resp.status_code == 503
+    assert "not connected to rosbridge" in resp.json()["detail"]
     assert fake.published_commands == []
 
 

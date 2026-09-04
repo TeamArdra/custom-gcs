@@ -20,6 +20,21 @@ async function getJson<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+// FastAPI error responses carry a JSON {"detail": "..."} body (e.g. the
+// 503 the backend raises for /api/command/* when rosbridge isn't
+// connected -- see gcs/backend/app/main.py). Best-effort only: a non-JSON
+// or bodyless error response must not itself throw here, or the operator
+// would see a confusing secondary error instead of the HTTP status.
+async function extractErrorDetail(res: Response): Promise<string | null> {
+  try {
+    const body: unknown = await res.json();
+    const detail = (body as { detail?: unknown } | null)?.detail;
+    return typeof detail === "string" ? detail : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getHealth(): Promise<HealthResponse> {
   return getJson<HealthResponse>("/health");
 }
@@ -66,7 +81,8 @@ export async function postCommand(cmd: Command): Promise<CommandResponse> {
     clearTimeout(timer);
   }
   if (!res.ok) {
-    throw new Error(`POST ${path} failed: HTTP ${res.status}`);
+    const detail = await extractErrorDetail(res);
+    throw new Error(`POST ${path} failed: HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
   }
   return (await res.json()) as CommandResponse;
 }

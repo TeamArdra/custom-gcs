@@ -18,7 +18,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -163,12 +163,18 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
 
     @app.post("/api/command/start", response_model=CommandResponse, tags=["command"])
     def start_mission() -> CommandResponse:
-        ros_client.publish_command("start")
+        try:
+            ros_client.publish_command("start")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=f"{exc} -- command not sent") from exc
         return CommandResponse(status="sent", command="start")
 
     @app.post("/api/command/abort", response_model=CommandResponse, tags=["command"])
     def abort_mission() -> CommandResponse:
-        ros_client.publish_command("abort")
+        try:
+            ros_client.publish_command("abort")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=f"{exc} -- command not sent") from exc
         return CommandResponse(status="sent", command="abort")
 
     # Static operator UI (React, built via `npm run build` in

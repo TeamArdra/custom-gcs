@@ -60,6 +60,18 @@ describe("api.ts", () => {
     await expect(getTelemetry()).rejects.toThrow(/503/);
   });
 
+  it("postCommand surfaces the backend's structured detail message on a non-OK status", async () => {
+    mockFetchOnce({ detail: "not connected to rosbridge -- command not sent" }, false, 503);
+    await expect(postCommand("abort")).rejects.toThrow(
+      "POST /api/command/abort failed: HTTP 503: not connected to rosbridge -- command not sent",
+    );
+  });
+
+  it("postCommand falls back to a bare HTTP status when the error body has no detail field", async () => {
+    mockFetchOnce({}, false, 500);
+    await expect(postCommand("start")).rejects.toThrow("POST /api/command/start failed: HTTP 500");
+  });
+
   it("postCommand('start') rejects with a clear timeout error at 5000ms instead of hanging forever", async () => {
     vi.useFakeTimers();
     // A fetch that never resolves on its own, but honours the
