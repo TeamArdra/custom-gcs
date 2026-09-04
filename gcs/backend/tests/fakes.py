@@ -17,6 +17,7 @@ class FakeRosBridgeClient:
         self._survivors: list[dict] = []
         self._statustext: list[dict] = []
         self.published_commands: list[str] = []
+        self._publish_exception: Exception | None = None
 
     def set_latest(self, topic: str, message: dict) -> None:
         self._latest[topic] = message
@@ -42,7 +43,19 @@ class FakeRosBridgeClient:
     def statustext_history(self) -> list[dict]:
         return self._statustext
 
+    def fail_publish_with(self, exc: Exception) -> None:
+        """Make subsequent publish_command calls raise `exc` instead of
+        recording the command -- mirrors how the real RosBridgeClient
+        raises RuntimeError("not connected to rosbridge") when its
+        connection to rosbridge is unavailable (see
+        app/ros_client.py:publish_command), so API-level tests can
+        exercise that downstream-failure path without a real dead
+        connection."""
+        self._publish_exception = exc
+
     def publish_command(self, command: str) -> None:
         if command not in VALID_COMMANDS:
             raise ValueError(f"invalid command: {command!r}")
+        if self._publish_exception is not None:
+            raise self._publish_exception
         self.published_commands.append(command)

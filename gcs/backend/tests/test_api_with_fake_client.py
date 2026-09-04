@@ -142,6 +142,49 @@ def test_abort_command_publishes_abort_and_only_abort():
     assert fake.published_commands == ["abort"]
 
 
+def test_start_command_reports_sent_even_when_ros_client_reports_disconnected():
+    """Pins the API's actual current contract, not a desired one: the
+    route never checks `ros_client.is_connected` before calling
+    `publish_command()` (see app/main.py:start_mission/abort_mission), so
+    a disconnected-but-not-yet-raising client still gets a 200 "sent"
+    response. This means the operator cannot distinguish "the drone
+    received this command" from "the backend merely accepted the HTTP
+    request" from this response alone -- see docs/COMMUNICATION.md's note
+    that /gcs/command has no defined ack semantics yet (D-10). If a future
+    change adds a pre-publish connectivity check, this test's expected
+    response should change to match the new documented contract -- don't
+    leave it passing on a stale assumption."""
+    client, fake = make_client()
+    fake.is_connected = False
+
+    resp = client.post("/api/command/start")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "sent", "command": "start"}
+    assert fake.published_commands == ["start"]
+
+
+def test_command_route_surfaces_a_server_error_when_the_downstream_publish_fails():
+    """Exercises the one error path publish_command can actually raise in
+    production: RuntimeError("not connected to rosbridge") when the
+    RosBridgeClient was never connected (see app/ros_client.py). Neither
+    route wraps ros_client.publish_command() in a try/except, so FastAPI's
+    default unhandled-exception handling applies -- a bare 500 with no
+    CommandResponse body, not a structured error the frontend could
+    special-case. Uses raise_server_exceptions=False so this test observes
+    the real HTTP response a browser would get, instead of the exception
+    propagating into the test process the way TestClient does by default."""
+    fake = FakeRosBridgeClient()
+    fake.fail_publish_with(RuntimeError("not connected to rosbridge"))
+    app = create_app(client=fake)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.post("/api/command/abort")
+
+    assert resp.status_code == 500
+    assert fake.published_commands == []
+
+
 def test_get_requests_never_mutate_command_state():
     client, fake = make_client()
     for _ in range(3):

@@ -70,4 +70,31 @@ describe("useTelemetry", () => {
     expect(screen.getByTestId("connected")).toHaveTextContent("true");
     expect(spy).toHaveBeenCalledTimes(2);
   });
+
+  it("clears a prior error once a later poll succeeds again (reconnection)", async () => {
+    // State x event this repo's own bar (see test_state_machine.py's
+    // pattern) requires covering: error -> success, not just success and
+    // success -> error. This is what the operator sees on a rosbridge
+    // reconnect after a drop -- if `error` were never cleared on
+    // success, the UI would keep showing a stale "telemetry fetch
+    // failed" banner over live data forever.
+    const spy = vi
+      .spyOn(api, "getTelemetry")
+      .mockRejectedValueOnce(new Error("network error"))
+      .mockResolvedValueOnce(GOOD_TELEMETRY);
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<Probe />);
+
+    await waitFor(() => expect(screen.getByTestId("error")).toHaveTextContent("network error"));
+    expect(screen.getByTestId("connected")).toHaveTextContent("null");
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    await waitFor(() => expect(screen.getByTestId("error")).toHaveTextContent("none"));
+    expect(screen.getByTestId("connected")).toHaveTextContent("true");
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
 });
