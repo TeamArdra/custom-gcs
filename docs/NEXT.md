@@ -1,3 +1,8 @@
+> **SUPERSEDED (2026-09-04).** This checklist is fully complete and
+> predates `CHECKPOINT/NEXT.md` (workspace root), the actively-maintained
+> forward-plan doc since 2026-08-28. Read `CHECKPOINT/NEXT.md` instead for
+> the current plan. Kept here unmodified as a historical record.
+
 # NIDAR Hardware Bring-Up — Next Steps
 
 1. ~~Install ros-humble-rosbridge-suite on Jetson.~~ DONE.

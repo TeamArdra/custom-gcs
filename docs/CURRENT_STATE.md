@@ -1,3 +1,14 @@
+> **SUPERSEDED (2026-09-04).** This file was the pre-cursor to
+> `CHECKPOINT/CURRENT_STATE.md` (workspace root, sibling of this repo),
+> which has been the canonical, actively-maintained cross-repo status
+> record since 2026-08-28 — the day after this file's last update.
+> Neither `custom-gcs/CLAUDE.md` nor `onboard-autonomy/CLAUDE.md`
+> reference this file anymore. Kept here, unmodified below this notice,
+> as a historical record of the initial 2026-08-25–27 hardware bring-up
+> (may contain detail not repeated in `CHECKPOINT/CURRENT_STATE.md`) —
+> do not treat anything below as current. Read `CHECKPOINT/CURRENT_STATE.md`
+> instead for anything about present-day project state.
+
 # NIDAR Hardware Bring-Up — Current State
 
 Checkpoint created: 2026-08-25
