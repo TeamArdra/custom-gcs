@@ -26,13 +26,17 @@ a real-time viewer, not a controller.
 This repository contains **only** the GCS. The drone, flight controller,
 and onboard autonomy system are a separate, parallel workstream.
 
-## Current Status: Phase 0 — Requirements & Architecture
+**Read `../CHECKPOINT/CURRENT_STATE.md` and `../CHECKPOINT/NEXT.md`
+before doing any work** — they are the authoritative, dated record of
+what has actually been verified against real hardware versus merely
+implemented, and are updated far more often than this file.
 
-**No application code has been written yet.** This is intentional. Phase 0
-is: read the competition rules closely, extract exactly what the GCS is
-required to do, propose (but not yet build) an architecture and technology
-stack, and define the data interfaces between the GCS and the drone-side
-system.
+## Reference Documentation
+
+Phase 0 (requirements, architecture, and interface definition, closed
+2026-08-27) produced the documents below; they remain the working
+reference for *why* the system is built the way it is. See "Current
+Status" further down for what's actually implemented today.
 
 | Document | Contents |
 |---|---|
@@ -65,8 +69,11 @@ custom-gcs/
 ├── docs/                Engineering documentation (see table above)
 ├── gcs/
 │   ├── backend/         FastAPI backend (Python) — the only component that talks to rosbridge.
-│   │                    Exposes a plain REST API + Swagger docs at /docs. See gcs/backend/README.md.
-│   └── frontend/        (planned) The GCS UI (React/TypeScript). Not started yet.
+│   │                    Exposes a plain REST API + Swagger docs at /docs, and serves the
+│   │                    operator frontend as static files at /ui. See gcs/backend/README.md.
+│   └── frontend/        Minimal static operator UI (plain HTML/JS, no build step) — served
+│                        by the FastAPI backend at /ui, not a standalone app. Exactly two
+│                        controls (START, STOP/ABORT) plus a read-only telemetry dashboard.
 ├── protocol/            (planned) Shared, versioned Drone↔GCS interface definitions. Empty — not started yet.
 ├── sim/                 Rosbridge-protocol simulator (Python) — a working stand-in for the real
 │                        Jetson's rosbridge_server, for developing/testing without drone hardware.
@@ -77,23 +84,34 @@ custom-gcs/
 ## Current Status: Phase 1 — Implementation
 
 Phase 0 (requirements/architecture) is closed; see the docs above for
-what was decided and why. Implementation has begun:
+what was decided and why. Implementation, real hardware verification
+included, is well underway — see `../CHECKPOINT/CURRENT_STATE.md` and
+`../CHECKPOINT/INTEGRATION_CHECKPOINTS.md` for the authoritative,
+checkpoint-gated status:
 
-- **Built:** `sim/` — a rosbridge-protocol-compatible simulator publishing
-  synthetic telemetry/map/survivor data matching `docs/DATA_MODELS.md`.
-- **Built:** `gcs/backend/` — a FastAPI service that connects to
-  rosbridge (`sim/` today, the real Jetson later — a config change, not a
-  code change) and re-exposes it as a plain REST API. The two-command
-  operator surface (start/abort) is enforced structurally: those are the
-  only mutating routes that exist. Testable directly via Swagger at
-  `/docs`, no frontend required.
-- **Not yet started:** the GCS frontend (`gcs/frontend/`), the shared
-  protocol package (`protocol/`), and video handling.
+- **Built and hardware-verified:** `sim/` — a rosbridge-protocol-
+  compatible simulator publishing synthetic telemetry/map/survivor data
+  matching `docs/DATA_MODELS.md`, used for development without drone
+  hardware. `gcs/backend/` — a FastAPI service that connects to rosbridge
+  (real Jetson or `sim/`, a config change not a code change) and
+  re-exposes it as a plain REST API, now carrying real FCU telemetry
+  (armed/mode/system_status, battery, pose, velocity, attitude, GPS,
+  STATUSTEXT). The two-command operator surface (start/abort) is enforced
+  structurally: those are the only mutating routes that exist.
+  `gcs/frontend/` — a minimal static operator dashboard (no build step),
+  served by the backend at `/ui`, with exactly the two permitted controls
+  (START, STOP/ABORT) — see `gcs/frontend/index.html`. **Checkpoint 1**
+  (this repo's checkpoint: the full GCS↔onboard-autonomy loop through the
+  real API) is **PASSED**; this repo's `start`/`abort` have also driven
+  real Pixhawk ARM/DISARM through `onboard-autonomy` (Checkpoints 3/4,
+  implemented and demonstrated, not yet formally closed — see
+  `INTEGRATION_CHECKPOINTS.md`).
+- **Not yet started:** the shared `protocol/` package and video handling.
 
 ## Next Step
 
-Build the GCS frontend against `gcs/backend/`'s REST API (itself running
-against `sim/` during development), starting with the two non-negotiable
-pieces: rendering live telemetry/mission status (proving the link is
-alive end-to-end) and the Start/Abort controls calling
-`POST /api/command/start` / `POST /api/command/abort`.
+See `../CHECKPOINT/NEXT.md` for the live, dated next-actions list. In
+short: close out Checkpoints 3/4 by demonstrating `abort` against a
+genuinely-armed vehicle (both mid-`start`-sequence and post-ARM), then
+reconcile that result into `INTEGRATION_CHECKPOINTS.md`, before any
+Checkpoint 5+ (autonomous takeoff) work begins.

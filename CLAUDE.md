@@ -93,9 +93,14 @@ mission is broken into 10 gated checkpoints, defined in
 `../CHECKPOINT/INTEGRATION_CHECKPOINTS.md` (sibling `CHECKPOINT/`
 directory at the workspace root, alongside this repo and
 `onboard-autonomy`). **Checkpoint 1 (GCS ↔ Autonomy integration via the
-real FastAPI API, currently IN PROGRESS) is this repo's checkpoint** —
-see `../CHECKPOINT/CURRENT_STATE.md` §0 for its current status before
-assuming it's closed. Checkpoints 2 onward are primarily
+real FastAPI API) is this repo's checkpoint — PASSED (2026-09-02)** —
+see `../CHECKPOINT/CURRENT_STATE.md` §0 and §15 for the closing
+verification record; re-check that file before assuming this or any
+later checkpoint's status, since it changes far more often than this
+paragraph. Checkpoints 3 and 4 (GCS `start`→ARM, GCS `abort`→DISARM) are
+implemented and demonstrated on real hardware but **not yet PASSED** —
+see `INTEGRATION_CHECKPOINTS.md` Checkpoints 3/4 for the specific
+criterion still outstanding on each. Checkpoints 2 onward are primarily
 `onboard-autonomy`'s responsibility (Jetson↔Pixhawk arming, flight
 control) but this repo's `start`/`abort` commands are the trigger for
 several of them (3, 4, 5, 10) — the architectural principle that the GCS

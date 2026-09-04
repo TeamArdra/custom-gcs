@@ -4,8 +4,9 @@ The GCS backend: a FastAPI service, and the only component in this repo
 that talks to rosbridge (real Jetson later, `../../sim/` for now). See
 `../../docs/ARCHITECTURE.md` §5.2 and `../../docs/DECISIONS.md` D-0.
 
-Exposes a plain REST API to the (not-yet-built) frontend — the frontend
-never needs to know what a `PoseStamped` or an `OccupancyGrid` is.
+Exposes a plain REST API to `../frontend/` (a minimal static page this
+app also serves at `/ui`) — the frontend never needs to know what a
+`PoseStamped` or an `OccupancyGrid` is.
 
 ## The entire mutating API surface
 
