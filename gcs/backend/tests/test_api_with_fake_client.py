@@ -153,24 +153,24 @@ def test_get_requests_never_mutate_command_state():
 
 
 def test_ui_serves_the_frontend_and_wires_the_documented_endpoints():
-    """No test previously touched the /ui static mount at all -- this
-    would not have caught a frontend calling the wrong path, but it does
-    catch the mount itself being broken (wrong directory, wrong route,
-    404 instead of the page) and pins down what the served page actually
-    tells a browser to call, so a future change to either side has to
-    break this test to drift apart."""
+    """gcs/frontend/ is now a compiled React/Vite SPA, not the old
+    single-file prototype -- /ui/ serves a minimal HTML shell (a
+    `<div id="root">` plus a hashed, bundled `<script type="module">`)
+    and the actual button/fetch logic lives inside that bundle, which
+    this Python TestClient has no JS engine to execute. So this test can
+    only prove what's still structurally true from the served HTML: the
+    mount serves a real build (not an empty/broken directory) at /ui
+    specifically. The "calls exactly /api/telemetry,
+    /api/command/start, /api/command/abort" guarantee now lives on the
+    frontend side -- see gcs/frontend/src/api.test.ts."""
     client, _ = make_client()
 
     resp = client.get("/ui/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
     body = resp.text
-    assert 'id="btnStart"' in body
-    assert 'id="btnStop"' in body
-    # The page must call the two documented, root-relative command
-    # routes -- not a hardcoded host/port, and not anything else.
-    assert "fetch(`/api/command/${command}`" in body
-    assert "fetch('/api/telemetry')" in body
+    assert '<div id="root">' in body
+    assert '<script type="module"' in body
 
 
 def test_no_route_exists_beyond_the_documented_command_surface():

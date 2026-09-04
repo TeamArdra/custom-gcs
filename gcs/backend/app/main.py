@@ -51,7 +51,7 @@ from .schemas import (
     VelocityResponse,
 )
 
-_FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+_FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 
 def create_app(client: RosBridgeClient | None = None, settings: Settings | None = None) -> FastAPI:
@@ -171,11 +171,16 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
         ros_client.publish_command("abort")
         return CommandResponse(status="sent", command="abort")
 
-    # Minimal static operator UI, mounted at /ui (not /) so it can never
-    # intercept an unmatched API path -- StaticFiles returns 405 for
-    # non-GET/HEAD requests to anything under its mount, which would
-    # otherwise shadow test_no_route_exists_beyond_the_documented_command_surface's
-    # 404 expectation for forbidden paths if mounted at "/". Calls this
+    # Static operator UI (React, built via `npm run build` in
+    # gcs/frontend/ -- see gcs/frontend/README.md), mounted at /ui (not
+    # /) so it can never intercept an unmatched API path -- StaticFiles
+    # returns 405 for non-GET/HEAD requests to anything under its mount,
+    # which would otherwise shadow
+    # test_no_route_exists_beyond_the_documented_command_surface's 404
+    # expectation for forbidden paths if mounted at "/". Serves the
+    # *build output* (frontend/dist/), not frontend/ source, and is
+    # simply absent (mount skipped) if dist/ hasn't been built yet --
+    # /ui/ 404s rather than serving raw source or crashing. Calls this
     # same API over HTTP, nothing else -- see gcs/frontend/.
     if _FRONTEND_DIR.is_dir():
         app.mount("/ui", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
