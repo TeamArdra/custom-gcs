@@ -152,6 +152,27 @@ def test_get_requests_never_mutate_command_state():
     assert fake.published_commands == []
 
 
+def test_ui_serves_the_frontend_and_wires_the_documented_endpoints():
+    """No test previously touched the /ui static mount at all -- this
+    would not have caught a frontend calling the wrong path, but it does
+    catch the mount itself being broken (wrong directory, wrong route,
+    404 instead of the page) and pins down what the served page actually
+    tells a browser to call, so a future change to either side has to
+    break this test to drift apart."""
+    client, _ = make_client()
+
+    resp = client.get("/ui/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    body = resp.text
+    assert 'id="btnStart"' in body
+    assert 'id="btnStop"' in body
+    # The page must call the two documented, root-relative command
+    # routes -- not a hardcoded host/port, and not anything else.
+    assert "fetch(`/api/command/${command}`" in body
+    assert "fetch('/api/telemetry')" in body
+
+
 def test_no_route_exists_beyond_the_documented_command_surface():
     """This is the structural guarantee the architecture is built around:
     the operator command surface is exactly start/abort because no other
