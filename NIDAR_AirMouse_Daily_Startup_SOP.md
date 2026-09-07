@@ -6,6 +6,42 @@ Use this procedure after a Jetson reboot, shutdown, or whenever the runtime ROS/
 
 > **Important:** This SOP is for the current development setup. Do not treat it as the final competition deployment procedure.
 
+# So your daily startup becomes 🔥
+
+Instead of all that typing:
+
+### Terminal 1
+
+```
+source ~/NIDAR/scripts/ros_env.sh
+```
+
+### Terminal 2
+
+```
+~/NIDAR/scripts/setup_network.sh
+```
+
+### Terminal 3
+
+```
+~/NIDAR/scripts/start_mavros.sh
+```
+
+### Terminal 4
+
+```
+~/NIDAR/scripts/start_rosbridge.sh
+```
+
+### Terminal 5
+
+```
+~/NIDAR/scripts/start_autonomy.sh
+```
+
+That's already **way nicer**.
+
 ---
 # Phase 0 — Physical Safety
 Before starting anything:
