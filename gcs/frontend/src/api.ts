@@ -10,6 +10,9 @@ import type {
   HealthResponse,
   MapResponse,
   PathResponse,
+  SimulationCommand,
+  SimulationCommandResponse,
+  SimulationStatusResponse,
   SurvivorResponse,
   TelemetryResponse,
 } from "./types";
@@ -74,9 +77,7 @@ const COMMAND_TIMEOUT_MS = 5000;
 // kill switch" well before a hung START would ever time out.
 const ABORT_TIMEOUT_MS = 1500;
 
-export async function postCommand(cmd: Command): Promise<CommandResponse> {
-  const path = `/api/command/${cmd}`;
-  const timeoutMs = cmd === "abort" ? ABORT_TIMEOUT_MS : COMMAND_TIMEOUT_MS;
+async function postAction<T>(path: string, timeoutMs: number): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
@@ -94,5 +95,38 @@ export async function postCommand(cmd: Command): Promise<CommandResponse> {
     const detail = await extractErrorDetail(res);
     throw new Error(`POST ${path} failed: HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
   }
-  return (await res.json()) as CommandResponse;
+  return (await res.json()) as T;
+}
+
+export function postCommand(cmd: Command): Promise<CommandResponse> {
+  const timeoutMs = cmd === "abort" ? ABORT_TIMEOUT_MS : COMMAND_TIMEOUT_MS;
+  return postAction<CommandResponse>(`/api/command/${cmd}`, timeoutMs);
+}
+
+// Simulation control -- see api.ts's module comment and
+// CHECKPOINT/CURRENT_STATE.md. Deliberately a separate function hitting
+// separate `/api/simulation/*` paths -- never `/api/command/*`. A
+// generous, single timeout is fine here (no safety-critical abort-
+// latency concern like the real command path has, since nothing here
+// can affect real flight).
+const SIMULATION_COMMAND_TIMEOUT_MS = 5000;
+
+export function postSimulationCommand(cmd: SimulationCommand): Promise<SimulationCommandResponse> {
+  return postAction<SimulationCommandResponse>(`/api/simulation/${cmd}`, SIMULATION_COMMAND_TIMEOUT_MS);
+}
+
+export function getSimulationStatus(): Promise<SimulationStatusResponse> {
+  return getJson<SimulationStatusResponse>("/api/simulation/status");
+}
+
+export function getSimulationMap(): Promise<MapResponse> {
+  return getJson<MapResponse>("/api/simulation/map");
+}
+
+export function getSimulationCoverage(): Promise<CoverageResponse> {
+  return getJson<CoverageResponse>("/api/simulation/coverage");
+}
+
+export function getSimulationPath(): Promise<PathResponse> {
+  return getJson<PathResponse>("/api/simulation/path");
 }

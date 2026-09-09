@@ -168,3 +168,18 @@ and building the simulator described in
 [ARCHITECTURE.md](ARCHITECTURE.md) §6 against that schema as early as
 possible so both sides can develop against a stable contract instead of
 against each other's in-progress code.
+
+## 5. Simulation Channel (Not Part Of The Drone ↔ GCS Interface)
+
+A second, entirely separate topic surface exists under the `/simulation/`
+namespace (`/simulation/command`, `/simulation/mission/state`,
+`/simulation/map`, etc.) — added 2026-09-10 for the GCS's dev/bench-only
+"RUN SIMULATION" feature (gated off by default in the frontend build —
+see `README.md`). It never overlaps with, redefines, or substitutes for
+any topic in §2's table: `/simulation/command` accepts only
+`"run"`/`"reset"`, never `"start"`/`"abort"`, and the real
+`/gcs/command`/`/mission/state` topics are untouched by it. Full design:
+`../../CHECKPOINT/docs/simulation_architecture.md`. Not documented
+further here since it is not part of the real Drone ↔ GCS contract this
+file describes — this section exists only so a reader of this file knows
+the second channel exists and where to find it.

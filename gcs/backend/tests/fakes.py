@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.ros_client import VALID_COMMANDS
+from app.ros_client import VALID_COMMANDS, VALID_SIMULATION_COMMANDS
 
 
 class FakeRosBridgeClient:
@@ -17,7 +17,9 @@ class FakeRosBridgeClient:
         self._survivors: list[dict] = []
         self._statustext: list[dict] = []
         self.published_commands: list[str] = []
+        self.published_simulation_commands: list[str] = []
         self._publish_exception: Exception | None = None
+        self._publish_simulation_exception: Exception | None = None
 
     def set_latest(self, topic: str, message: dict) -> None:
         self._latest[topic] = message
@@ -59,3 +61,17 @@ class FakeRosBridgeClient:
         if self._publish_exception is not None:
             raise self._publish_exception
         self.published_commands.append(command)
+
+    def fail_publish_simulation_with(self, exc: Exception) -> None:
+        self._publish_simulation_exception = exc
+
+    def publish_simulation_command(self, command: str) -> None:
+        """The fake's mirror of the real client's simulation-only publish
+        method -- deliberately separate from publish_command()/
+        published_commands above, so a test can assert a simulation route
+        never touched the real command path."""
+        if command not in VALID_SIMULATION_COMMANDS:
+            raise ValueError(f"invalid simulation command: {command!r}")
+        if self._publish_simulation_exception is not None:
+            raise self._publish_simulation_exception
+        self.published_simulation_commands.append(command)

@@ -108,6 +108,31 @@ checkpoint-gated status:
   `INTEGRATION_CHECKPOINTS.md`).
 - **Not yet started:** the shared `protocol/` package and video handling.
 
+## Simulation ("RUN SIMULATION")
+
+The GCS frontend has a second, clearly-separate "Simulation" section (a
+dashed-violet-bordered panel, badged "SIMULATION — NOT REAL FLIGHT")
+below the real operator panels. Its **RUN SIMULATION**/**RESET** buttons
+call `POST /api/simulation/{run,reset}` — routes that publish only to
+`/simulation/command` on the Jetson (never the real `/gcs/command`) and
+drive a deterministic simulated exploration mission running entirely
+inside `onboard-autonomy` (`mission_simulator.py`/`simulation_node.py`).
+See `../CHECKPOINT/docs/simulation_architecture.md` for the full
+architecture and `../CHECKPOINT/CURRENT_STATE.md` for real end-to-end
+test evidence (a full run driven purely through this repo's real FastAPI
+backend over the real rosbridge connection).
+
+**Gated OFF by default in the frontend build** — per this repo's
+Important Constraint #1 (operator command surface is exactly Start and
+Abort), a competition-deployed build must not expose any additional
+clickable control. `gcs/frontend/src/App.tsx` only renders the
+simulation section when `VITE_ENABLE_SIMULATION=true` is set at build/
+dev-server time; the default (unset) production build tree-shakes
+`SimulationPanel` out of the bundle entirely (verified: ~4kB smaller,
+zero occurrences of its UI strings in the built JS). To see/test it
+locally: `VITE_ENABLE_SIMULATION=true npm run dev` (or `... npm run
+build`). **Never set this flag for a competition build.**
+
 ## Next Step
 
 See `../CHECKPOINT/NEXT.md` for the live, dated next-actions list. In

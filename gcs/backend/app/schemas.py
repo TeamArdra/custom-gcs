@@ -178,3 +178,52 @@ class SurvivorResponse(BaseModel):
 class CommandResponse(BaseModel):
     status: str
     command: str
+
+
+class SimulationCommandResponse(BaseModel):
+    """Deliberately a DIFFERENT type from CommandResponse -- see
+    SimulationStatusResponse's own docstring for why this repo never
+    reuses a real-telemetry/real-command response type for simulation
+    data, even where the shape would otherwise match."""
+
+    status: str
+    command: str
+
+
+class SimulationStatusResponse(BaseModel):
+    """The simulation's own status -- a DELIBERATELY DIFFERENT Pydantic
+    type from TelemetryResponse, not just a relabeled copy, so a
+    simulation response can never be structurally confused with real
+    Pixhawk telemetry even by a caller that forgot to check `source`.
+    See CHECKPOINT/CURRENT_STATE.md and
+    onboard-autonomy/nidar_autonomy/simulation_node.py, the only thing
+    that ever produces the data behind this response.
+
+    `status` is the simulation's own lifecycle ("idle"/"running"/
+    "completed"/"failed") -- distinct from `mission_state`, which is the
+    simulated MISSION's lifecycle (idle/entering/searching/exiting/
+    complete/aborted, same vocabulary as the real system's
+    /mission/state, but from this simulator's own, separate state
+    machine instance)."""
+
+    source: str = "simulation"
+    status: str = "idle"
+    mission_state: str = "idle"
+    step: int = 0
+    elapsed_sim_seconds: float = 0.0
+    pose: PositionResponse | None = None
+    autonomy: AutonomyStateResponse = AutonomyStateResponse()
+    sensors: SensorsResponse = SensorsResponse()
+    mapping: MappingStatusResponse = MappingStatusResponse()
+    navigation: NavigationResponse = NavigationResponse()
+    # Two different metrics -- see
+    # onboard-autonomy/nidar_autonomy/mission_simulator.py's
+    # SimulationSnapshot docstring for why they diverge sharply and both
+    # matter: map_known_pct is "how much of the arena has been
+    # discovered" (grows progressively -- render this as the headline
+    # exploration-progress indicator); coverage_search_pct is "of what's
+    # currently known, how much has the camera actually searched"
+    # (saturates near 100% quickly -- a different, narrower question).
+    map_known_pct: float = 0.0
+    coverage_search_pct: float = 0.0
+    error: str | None = None

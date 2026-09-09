@@ -10,10 +10,25 @@ import StatusTextPanel from "./components/StatusTextPanel";
 import MapPanel from "./components/MapPanel";
 import AutonomyPanel from "./components/AutonomyPanel";
 import SurvivorsPanel from "./components/SurvivorsPanel";
+import SimulationPanel from "./components/SimulationPanel";
 import Footer from "./components/Footer";
 
 export default function App() {
   const { data: telemetry, error, lastUpdatedAt } = useTelemetry();
+
+  // The simulation panel is dev/bench-only and gated OFF by default --
+  // per custom-gcs/CLAUDE.md Important Constraint #1, the operator
+  // command surface is exactly Start and Abort; a competition-deployed
+  // build must not expose any additional clickable control, even one as
+  // thoroughly isolated from real flight as this one is (see
+  // CHECKPOINT/docs/simulation_architecture.md for the isolation
+  // guarantees). Opt in explicitly for local development/testing:
+  //   VITE_ENABLE_SIMULATION=true npm run dev
+  //   VITE_ENABLE_SIMULATION=true npm run build
+  // Never set this for a competition build. See README.md. Read inside
+  // the component (not as a module-level constant) so it reflects the
+  // environment at render time, not just at first import.
+  const simulationEnabled = import.meta.env.VITE_ENABLE_SIMULATION === "true";
 
   const subtitle = error
     ? `telemetry fetch failed: ${error}`
@@ -41,6 +56,17 @@ export default function App() {
         <StatusTextPanel telemetry={telemetry} />
         <MapPanel telemetry={telemetry} />
       </div>
+
+      {simulationEnabled && (
+        <>
+          <div className="mt-6 mb-2 text-xs uppercase tracking-wide text-violet-400 font-semibold">
+            Simulation — independent of the panels above, never touches real flight
+          </div>
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
+            <SimulationPanel />
+          </div>
+        </>
+      )}
 
       <Footer />
     </div>

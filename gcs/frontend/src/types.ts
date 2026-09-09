@@ -161,3 +161,36 @@ export interface CommandResponse {
 // The operator command surface is exactly these two -- see
 // custom-gcs/CLAUDE.md Important Constraints #1. Do not widen this type.
 export type Command = "start" | "abort";
+
+// -- Simulation ("RUN SIMULATION") -- completely separate from the real
+// mission command/telemetry types above. See
+// CHECKPOINT/CURRENT_STATE.md and
+// onboard-autonomy/nidar_autonomy/simulation_node.py.
+
+export interface SimulationCommandResponse {
+  status: string;
+  command: string;
+}
+
+// Deliberately NOT TelemetryResponse -- see gcs/backend/app/schemas.py's
+// SimulationStatusResponse docstring for why this stays a distinct type
+// even though several nested shapes match.
+export interface SimulationStatusResponse {
+  source: "simulation";
+  status: "idle" | "running" | "completed" | "failed";
+  mission_state: string;
+  step: number;
+  elapsed_sim_seconds: number;
+  pose: PositionResponse | null;
+  autonomy: AutonomyStateResponse;
+  sensors: SensorsResponse;
+  mapping: MappingStatusResponse;
+  navigation: NavigationResponse;
+  map_known_pct: number;
+  coverage_search_pct: number;
+  error: string | null;
+}
+
+// The simulation control surface is exactly these two -- never
+// "start"/"abort" (that vocabulary stays exclusive to Command above).
+export type SimulationCommand = "run" | "reset";

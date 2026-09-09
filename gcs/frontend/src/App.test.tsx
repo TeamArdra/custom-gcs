@@ -34,6 +34,18 @@ describe("App", () => {
     vi.spyOn(api, "getMap").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
     vi.spyOn(api, "getCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
     vi.spyOn(api, "getPath").mockResolvedValue({ points: [] });
+    vi.spyOn(api, "getSimulationStatus").mockResolvedValue({
+      source: "simulation", status: "idle", mission_state: "idle", step: 0, elapsed_sim_seconds: 0,
+      pose: null,
+      autonomy: { state: null, objective: null, target: null, next_action: null },
+      sensors: { slam: null, lidar: null, rangefinder: null, camera: null },
+      mapping: { available: false, resolution_m: null, width_cells: null, height_cells: null, origin_x: null, origin_y: null, coverage_cell_size_m: null, explored_pct: null },
+      navigation: { target: null, frontier_count: null, candidate_count: null, blacklisted_count: null, geofence_breached: null },
+      map_known_pct: 0, coverage_search_pct: 0, error: null,
+    });
+    vi.spyOn(api, "getSimulationMap").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getSimulationCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getSimulationPath").mockResolvedValue({ points: [] });
     vi.spyOn(api, "getSurvivors").mockResolvedValue([]);
     vi.spyOn(api, "getHealth").mockResolvedValue({
       connected: true,
@@ -57,6 +69,18 @@ describe("App", () => {
     vi.spyOn(api, "getMap").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
     vi.spyOn(api, "getCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
     vi.spyOn(api, "getPath").mockResolvedValue({ points: [] });
+    vi.spyOn(api, "getSimulationStatus").mockResolvedValue({
+      source: "simulation", status: "idle", mission_state: "idle", step: 0, elapsed_sim_seconds: 0,
+      pose: null,
+      autonomy: { state: null, objective: null, target: null, next_action: null },
+      sensors: { slam: null, lidar: null, rangefinder: null, camera: null },
+      mapping: { available: false, resolution_m: null, width_cells: null, height_cells: null, origin_x: null, origin_y: null, coverage_cell_size_m: null, explored_pct: null },
+      navigation: { target: null, frontier_count: null, candidate_count: null, blacklisted_count: null, geofence_breached: null },
+      map_known_pct: 0, coverage_search_pct: 0, error: null,
+    });
+    vi.spyOn(api, "getSimulationMap").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getSimulationCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getSimulationPath").mockResolvedValue({ points: [] });
     vi.spyOn(api, "getSurvivors").mockResolvedValue([]);
     vi.spyOn(api, "getHealth").mockResolvedValue({
       connected: false,
@@ -69,5 +93,55 @@ describe("App", () => {
     expect(
       await screen.findByText(/telemetry fetch failed: network error/),
     ).toBeInTheDocument();
+  });
+
+  it("does NOT render the simulation panel by default (competition-build safety)", async () => {
+    vi.spyOn(api, "getTelemetry").mockResolvedValue(TELEMETRY);
+    vi.spyOn(api, "getMap").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getPath").mockResolvedValue({ points: [] });
+    vi.spyOn(api, "getSurvivors").mockResolvedValue([]);
+    vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
+    const simStatusSpy = vi.spyOn(api, "getSimulationStatus");
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("searching")).toBeInTheDocument());
+
+    // No VITE_ENABLE_SIMULATION set in this test -- per
+    // custom-gcs/CLAUDE.md Important Constraint #1, the simulation
+    // controls must not exist in the operator-facing surface unless
+    // explicitly opted into.
+    expect(screen.queryByRole("button", { name: "RUN SIMULATION" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/SIMULATION — NOT REAL FLIGHT/)).not.toBeInTheDocument();
+    expect(simStatusSpy).not.toHaveBeenCalled();
+  });
+
+  it("renders the simulation panel only when VITE_ENABLE_SIMULATION=true", async () => {
+    vi.stubEnv("VITE_ENABLE_SIMULATION", "true");
+    vi.spyOn(api, "getTelemetry").mockResolvedValue(TELEMETRY);
+    vi.spyOn(api, "getMap").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getPath").mockResolvedValue({ points: [] });
+    vi.spyOn(api, "getSurvivors").mockResolvedValue([]);
+    vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
+    vi.spyOn(api, "getSimulationStatus").mockResolvedValue({
+      source: "simulation", status: "idle", mission_state: "idle", step: 0, elapsed_sim_seconds: 0,
+      pose: null,
+      autonomy: { state: null, objective: null, target: null, next_action: null },
+      sensors: { slam: null, lidar: null, rangefinder: null, camera: null },
+      mapping: { available: false, resolution_m: null, width_cells: null, height_cells: null, origin_x: null, origin_y: null, coverage_cell_size_m: null, explored_pct: null },
+      navigation: { target: null, frontier_count: null, candidate_count: null, blacklisted_count: null, geofence_breached: null },
+      map_known_pct: 0, coverage_search_pct: 0, error: null,
+    });
+    vi.spyOn(api, "getSimulationMap").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getSimulationCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getSimulationPath").mockResolvedValue({ points: [] });
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "RUN SIMULATION" })).toBeInTheDocument();
+    expect(screen.getByText(/SIMULATION — NOT REAL FLIGHT/)).toBeInTheDocument();
+
+    vi.unstubAllEnvs();
   });
 });

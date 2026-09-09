@@ -38,6 +38,24 @@ COVERAGE_GRID_TOPIC = "/coverage_grid"
 PLANNED_PATH_TOPIC = "/planned_path"
 TELEMETRY_STATE_TOPIC = "/telemetry/state"
 
+# Simulation-only topics -- the GCS "RUN SIMULATION" path. Every name
+# lives under /simulation/, entirely separate from the real topics above
+# (see onboard-autonomy/nidar_autonomy/topics.py's "Simulation-only
+# topics" section and onboard-autonomy/nidar_autonomy/simulation_node.py,
+# which is the only thing that ever publishes/subscribes these).
+# publish_simulation_command() below is a SEPARATE method from
+# publish_command() -- it can never reach COMMAND_TOPIC (the real
+# /gcs/command), and publish_command() can never reach
+# SIMULATION_COMMAND_TOPIC. See CHECKPOINT/CURRENT_STATE.md.
+SIMULATION_COMMAND_TOPIC = "/simulation/command"
+SIMULATION_MISSION_STATE_TOPIC = "/simulation/mission/state"
+SIMULATION_STATUS_TOPIC = "/simulation/status"
+SIMULATION_MAP_TOPIC = "/simulation/map"
+SIMULATION_COVERAGE_GRID_TOPIC = "/simulation/coverage_grid"
+SIMULATION_PLANNED_PATH_TOPIC = "/simulation/planned_path"
+SIMULATION_TELEMETRY_STATE_TOPIC = "/simulation/telemetry/state"
+VALID_SIMULATION_COMMANDS = ("run", "reset")
+
 # Read-only FCU telemetry, subscribed directly via rosbridge -- same
 # pattern already used for BATTERY_TOPIC/POSE_TOPIC above (both already
 # read straight from mavros topics). This does NOT give the GCS any new
@@ -71,6 +89,12 @@ _SUBSCRIBED_TOPIC_TYPES = {
     COVERAGE_GRID_TOPIC: "nav_msgs/OccupancyGrid",
     PLANNED_PATH_TOPIC: "nav_msgs/Path",
     TELEMETRY_STATE_TOPIC: "std_msgs/String",
+    SIMULATION_MISSION_STATE_TOPIC: "std_msgs/String",
+    SIMULATION_STATUS_TOPIC: "std_msgs/String",
+    SIMULATION_MAP_TOPIC: "nav_msgs/OccupancyGrid",
+    SIMULATION_COVERAGE_GRID_TOPIC: "nav_msgs/OccupancyGrid",
+    SIMULATION_PLANNED_PATH_TOPIC: "nav_msgs/Path",
+    SIMULATION_TELEMETRY_STATE_TOPIC: "std_msgs/String",
 }
 _COMMAND_TOPIC_TYPE = "std_msgs/String"
 VALID_COMMANDS = ("start", "abort")
@@ -94,6 +118,7 @@ class RosBridgeClient:
         self._statustext_history: list[dict] = []
         self._subscriptions: list[roslibpy.Topic] = []
         self._command_topic: roslibpy.Topic | None = None
+        self._simulation_command_topic: roslibpy.Topic | None = None
 
     def connect(self) -> None:
         self._ros.run(timeout=self._connect_timeout_s)
@@ -103,6 +128,10 @@ class RosBridgeClient:
             self._subscriptions.append(sub)
         self._command_topic = roslibpy.Topic(self._ros, COMMAND_TOPIC, _COMMAND_TOPIC_TYPE)
         self._command_topic.advertise()
+        self._simulation_command_topic = roslibpy.Topic(
+            self._ros, SIMULATION_COMMAND_TOPIC, _COMMAND_TOPIC_TYPE
+        )
+        self._simulation_command_topic.advertise()
 
     def disconnect(self) -> None:
         for sub in self._subscriptions:
@@ -111,6 +140,9 @@ class RosBridgeClient:
         if self._command_topic is not None:
             self._command_topic.unadvertise()
             self._command_topic = None
+        if self._simulation_command_topic is not None:
+            self._simulation_command_topic.unadvertise()
+            self._simulation_command_topic = None
         self._ros.terminate()
 
     def _make_handler(self, topic: str):
@@ -123,7 +155,7 @@ class RosBridgeClient:
                     self._statustext_history.append(message)
                     if len(self._statustext_history) > _STATUSTEXT_HISTORY:
                         self._statustext_history.pop(0)
-                elif topic == TELEMETRY_STATE_TOPIC:
+                elif topic in (TELEMETRY_STATE_TOPIC, SIMULATION_TELEMETRY_STATE_TOPIC):
                     # std_msgs/String carrying a JSON-encoded normalized
                     # telemetry contract (see
                     # CHECKPOINT/docs/gcs_telemetry_contract.md) -- cache
@@ -175,3 +207,19 @@ class RosBridgeClient:
         if self._command_topic is None:
             raise RuntimeError("not connected to rosbridge")
         self._command_topic.publish(roslibpy.Message({"data": command}))
+
+    def publish_simulation_command(self, command: str) -> None:
+        """The ENTIRE simulation control surface -- deliberately a
+        separate method from publish_command() above, publishing to a
+        separate topic (SIMULATION_COMMAND_TOPIC, never COMMAND_TOPIC).
+        Accepts only "run"/"reset" -- never "start"/"abort", which stay
+        exclusively publish_command()'s vocabulary on the real
+        /gcs/command topic. Nothing in this method can reach the real
+        mission/flight-control path."""
+        if command not in VALID_SIMULATION_COMMANDS:
+            raise ValueError(
+                f"invalid simulation command: {command!r}; must be one of {VALID_SIMULATION_COMMANDS}"
+            )
+        if self._simulation_command_topic is None:
+            raise RuntimeError("not connected to rosbridge")
+        self._simulation_command_topic.publish(roslibpy.Message({"data": command}))

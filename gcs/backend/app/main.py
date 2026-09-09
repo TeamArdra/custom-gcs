@@ -7,10 +7,19 @@ test double with no real networking -- see tests/fakes.py.
 
 The API surface is intentionally small. In particular: there is no route
 that can modify navigation, the map, or survivor tags, and there are
-exactly two mutating routes in the whole app (POST /api/command/start,
-POST /api/command/abort). That is not a convention the frontend is
-trusted to respect -- it's true because no other route exists. See
+exactly two mutating routes affecting the REAL mission (POST
+/api/command/start, POST /api/command/abort). That is not a convention
+the frontend is trusted to respect -- it's true because no other route
+touching the real mission/flight-control path exists. See
 docs/REQUIREMENTS.md §6 and docs/CLAUDE.md "Important Constraints" §1.
+
+Separately, POST /api/simulation/run and POST /api/simulation/reset
+control a self-contained, ROS-topic-isolated simulation (see
+onboard-autonomy/nidar_autonomy/simulation_node.py and
+CHECKPOINT/CURRENT_STATE.md) -- these publish to /simulation/command,
+NEVER to the real /gcs/command, and cannot affect the real mission state
+machine or the real Pixhawk under any circumstance (that ROS node never
+imports mavros_msgs/flight_command.py at all).
 """
 
 from __future__ import annotations
@@ -34,6 +43,12 @@ from .ros_client import (
     MISSION_STATE_TOPIC,
     PLANNED_PATH_TOPIC,
     POSE_TOPIC,
+    SIMULATION_COVERAGE_GRID_TOPIC,
+    SIMULATION_MAP_TOPIC,
+    SIMULATION_MISSION_STATE_TOPIC,
+    SIMULATION_PLANNED_PATH_TOPIC,
+    SIMULATION_STATUS_TOPIC,
+    SIMULATION_TELEMETRY_STATE_TOPIC,
     TELEMETRY_STATE_TOPIC,
     VELOCITY_TOPIC,
     RosBridgeClient,
@@ -55,6 +70,8 @@ from .schemas import (
     PoseResponse,
     PositionResponse,
     SensorsResponse,
+    SimulationCommandResponse,
+    SimulationStatusResponse,
     StatusTextResponse,
     SurvivorResponse,
     TelemetryResponse,
@@ -253,6 +270,124 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=f"{exc} -- command not sent") from exc
         return CommandResponse(status="sent", command="abort")
+
+    # -- Simulation control surface -----------------------------------------
+    #
+    # Entirely separate from the real command/telemetry surface above:
+    # different publish method (publish_simulation_command, never
+    # publish_command), different topic (/simulation/command, never
+    # /gcs/command), different response type (SimulationStatusResponse,
+    # never TelemetryResponse). See CHECKPOINT/CURRENT_STATE.md and
+    # onboard-autonomy/nidar_autonomy/simulation_node.py.
+
+    @app.post("/api/simulation/run", response_model=SimulationCommandResponse, tags=["simulation"])
+    def run_simulation() -> SimulationCommandResponse:
+        try:
+            ros_client.publish_simulation_command("run")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=f"{exc} -- command not sent") from exc
+        return SimulationCommandResponse(status="sent", command="run")
+
+    @app.post("/api/simulation/reset", response_model=SimulationCommandResponse, tags=["simulation"])
+    def reset_simulation() -> SimulationCommandResponse:
+        try:
+            ros_client.publish_simulation_command("reset")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=f"{exc} -- command not sent") from exc
+        return SimulationCommandResponse(status="sent", command="reset")
+
+    @app.get("/api/simulation/status", response_model=SimulationStatusResponse, tags=["simulation"])
+    def simulation_status() -> SimulationStatusResponse:
+        contract = ros_client.latest(SIMULATION_TELEMETRY_STATE_TOPIC) or {}
+        status_msg = ros_client.latest(SIMULATION_STATUS_TOPIC) or {}
+        mission_state_msg = ros_client.latest(SIMULATION_MISSION_STATE_TOPIC) or {}
+        autonomy = contract.get("autonomy") or {}
+        sensors = contract.get("sensors") or {}
+        mapping = contract.get("mapping") or {}
+        navigation = contract.get("navigation") or {}
+        position = contract.get("position") or {}
+
+        return SimulationStatusResponse(
+            status=status_msg.get("data", "idle"),
+            mission_state=mission_state_msg.get("data", "idle"),
+            step=contract.get("simulation_step", 0),
+            elapsed_sim_seconds=(contract.get("mission") or {}).get("elapsed_sec", 0.0) or 0.0,
+            pose=PositionResponse(x=position["x"], y=position["y"], z=position["z"])
+            if position.get("x") is not None
+            else None,
+            autonomy=AutonomyStateResponse(
+                state=autonomy.get("state"),
+                objective=autonomy.get("objective"),
+                target=autonomy.get("target"),
+                next_action=autonomy.get("next_action"),
+            ),
+            sensors=SensorsResponse(
+                slam=sensors.get("slam"),
+                lidar=sensors.get("lidar"),
+                rangefinder=sensors.get("rangefinder"),
+                camera=sensors.get("camera"),
+            ),
+            mapping=MappingStatusResponse(
+                available=bool(mapping.get("available", False)),
+                resolution_m=mapping.get("resolution_m"),
+                width_cells=mapping.get("width_cells"),
+                height_cells=mapping.get("height_cells"),
+                origin_x=mapping.get("origin_x"),
+                origin_y=mapping.get("origin_y"),
+                coverage_cell_size_m=mapping.get("coverage_cell_size_m"),
+                explored_pct=mapping.get("explored_pct"),
+            ),
+            navigation=NavigationResponse(
+                target=navigation.get("target"),
+                frontier_count=navigation.get("frontier_count"),
+                candidate_count=navigation.get("candidate_count"),
+                blacklisted_count=navigation.get("blacklisted_count"),
+                geofence_breached=navigation.get("geofence_breached"),
+            ),
+            map_known_pct=mapping.get("explored_pct") or 0.0,
+            coverage_search_pct=contract.get("coverage_search_pct", 0.0) or 0.0,
+            error=contract.get("error"),
+        )
+
+    @app.get("/api/simulation/map", response_model=MapResponse, tags=["simulation"])
+    def simulation_map() -> MapResponse:
+        msg = ros_client.latest(SIMULATION_MAP_TOPIC)
+        if msg is None:
+            return MapResponse()
+        info = msg.get("info", {})
+        return MapResponse(
+            resolution=info.get("resolution"),
+            width=info.get("width"),
+            height=info.get("height"),
+            data=msg.get("data"),
+        )
+
+    @app.get("/api/simulation/coverage", response_model=CoverageResponse, tags=["simulation"])
+    def simulation_coverage() -> CoverageResponse:
+        msg = ros_client.latest(SIMULATION_COVERAGE_GRID_TOPIC)
+        if msg is None:
+            return CoverageResponse()
+        info = msg.get("info", {})
+        return CoverageResponse(
+            resolution=info.get("resolution"),
+            width=info.get("width"),
+            height=info.get("height"),
+            data=msg.get("data"),
+        )
+
+    @app.get("/api/simulation/path", response_model=PathResponse, tags=["simulation"])
+    def simulation_path() -> PathResponse:
+        msg = ros_client.latest(SIMULATION_PLANNED_PATH_TOPIC)
+        if msg is None:
+            return PathResponse()
+        points = [
+            PathPointResponse(
+                x=(pose.get("pose") or {}).get("position", {}).get("x", 0.0),
+                y=(pose.get("pose") or {}).get("position", {}).get("y", 0.0),
+            )
+            for pose in msg.get("poses", [])
+        ]
+        return PathResponse(points=points)
 
     # Static operator UI (React, built via `npm run build` in
     # gcs/frontend/ -- see gcs/frontend/README.md), mounted at /ui (not
