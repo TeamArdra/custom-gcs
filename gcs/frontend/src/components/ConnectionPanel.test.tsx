@@ -21,6 +21,13 @@ function telemetryWith(overrides: Partial<TelemetryResponse>): TelemetryResponse
     gps: null,
     statustext: [],
     heartbeat_age_s: 0.2,
+    autonomy: { state: null, objective: null, target: null, next_action: null },
+    sensors: { slam: null, lidar: null, rangefinder: null, camera: null },
+    mapping: {
+      available: false, resolution_m: null, width_cells: null, height_cells: null,
+      origin_x: null, origin_y: null, coverage_cell_size_m: null, explored_pct: null,
+    },
+    navigation: { target: null, frontier_count: null, candidate_count: null, blacklisted_count: null, geofence_breached: null },
     ...overrides,
   };
 }

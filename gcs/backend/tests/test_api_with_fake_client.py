@@ -93,7 +93,7 @@ def test_telemetry_reflects_latest_cached_values():
 def test_map_snapshot_flattens_occupancy_grid():
     client, fake = make_client()
     fake.set_latest(
-        "/slam/map",
+        "/map",
         {"info": {"resolution": 1.0, "width": 5, "height": 5}, "data": [-1] * 25},
     )
 
@@ -109,6 +109,110 @@ def test_map_snapshot_before_any_map_received():
     client, _ = make_client()
     body = client.get("/api/map").json()
     assert body == {"resolution": None, "width": None, "height": None, "data": None}
+
+
+def test_coverage_snapshot_flattens_occupancy_grid():
+    client, fake = make_client()
+    fake.set_latest(
+        "/coverage_grid",
+        {"info": {"resolution": 1.0, "width": 3, "height": 3}, "data": [0] * 9},
+    )
+
+    body = client.get("/api/coverage").json()
+
+    assert body["width"] == 3
+    assert body["height"] == 3
+    assert len(body["data"]) == 9
+
+
+def test_coverage_snapshot_before_any_data_received():
+    client, _ = make_client()
+    body = client.get("/api/coverage").json()
+    assert body == {"resolution": None, "width": None, "height": None, "data": None}
+
+
+def test_planned_path_flattens_pose_array_to_points():
+    client, fake = make_client()
+    fake.set_latest(
+        "/planned_path",
+        {
+            "poses": [
+                {"pose": {"position": {"x": 1.0, "y": 2.0}}},
+                {"pose": {"position": {"x": 3.0, "y": 4.0}}},
+            ]
+        },
+    )
+
+    body = client.get("/api/path").json()
+
+    assert body["points"] == [{"x": 1.0, "y": 2.0}, {"x": 3.0, "y": 4.0}]
+
+
+def test_planned_path_before_any_data_received():
+    client, _ = make_client()
+    body = client.get("/api/path").json()
+    assert body == {"points": []}
+
+
+def test_telemetry_reflects_mapping_autonomy_navigation_from_telemetry_state():
+    """/telemetry/state is a normalized JSON contract from onboard-autonomy
+    (see CHECKPOINT/docs/gcs_telemetry_contract.md); RosBridgeClient caches
+    it already-parsed, so the fake stores the same shape a real client
+    would after JSON-decoding the std_msgs/String payload."""
+    client, fake = make_client()
+    fake.set_latest(
+        "/telemetry/state",
+        {
+            "autonomy": {
+                "state": "SEARCHING_FRONTIER",
+                "objective": "Explore unexplored region",
+                "target": [4.2, 7.8],
+                "next_action": "Navigate to frontier",
+            },
+            "sensors": {"slam": "ok", "lidar": "ok", "rangefinder": "not_integrated", "camera": "not_integrated"},
+            "mapping": {
+                "available": True,
+                "resolution_m": 0.05,
+                "width_cells": 320,
+                "height_cells": 320,
+                "origin_x": -8.5,
+                "origin_y": -1.0,
+                "coverage_cell_size_m": 1.0,
+                "explored_pct": 63.5,
+            },
+            "navigation": {
+                "target": [4.2, 7.8],
+                "frontier_count": 3,
+                "candidate_count": 5,
+                "blacklisted_count": 1,
+                "geofence_breached": False,
+            },
+        },
+    )
+
+    body = client.get("/api/telemetry").json()
+
+    assert body["autonomy"]["state"] == "SEARCHING_FRONTIER"
+    assert body["autonomy"]["target"] == [4.2, 7.8]
+    assert body["sensors"]["slam"] == "ok"
+    assert body["mapping"]["available"] is True
+    assert body["mapping"]["explored_pct"] == 63.5
+    assert body["navigation"]["frontier_count"] == 3
+    assert body["navigation"]["geofence_breached"] is False
+
+
+def test_telemetry_mapping_defaults_before_any_telemetry_state_received():
+    client, _ = make_client()
+    body = client.get("/api/telemetry").json()
+    assert body["mapping"] == {
+        "available": False, "resolution_m": None, "width_cells": None, "height_cells": None,
+        "origin_x": None, "origin_y": None, "coverage_cell_size_m": None, "explored_pct": None,
+    }
+    assert body["autonomy"] == {"state": None, "objective": None, "target": None, "next_action": None}
+    assert body["navigation"] == {
+        "target": None, "frontier_count": None, "candidate_count": None,
+        "blacklisted_count": None, "geofence_breached": None,
+    }
 
 
 def test_survivors_endpoint_reflects_client_state():

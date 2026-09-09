@@ -13,6 +13,7 @@ rather than assuming any particular event loop.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from typing import Any
@@ -22,10 +23,20 @@ import roslibpy
 MISSION_STATE_TOPIC = "/mission/state"
 BATTERY_TOPIC = "/mavros/battery"
 POSE_TOPIC = "/mavros/local_position/pose"
-MAP_TOPIC = "/slam/map"
 SURVIVORS_TOPIC = "/vision/survivors"
 HEARTBEAT_TOPIC = "/gcs/heartbeat"
 COMMAND_TOPIC = "/gcs/command"
+
+# Mapping/exploration/telemetry topics -- adopted from onboard-autonomy's
+# NIDAR Autonomy Migration (folding gps_denied/raj-dev's mapping stack in;
+# see CHECKPOINT/CURRENT_STATE.md). `/map` supersedes the never-implemented
+# `/slam/map` placeholder this backend used before that migration -- see
+# docs/DATA_MODELS.md's changelog note. Full contract:
+# CHECKPOINT/docs/gcs_telemetry_contract.md.
+MAP_TOPIC = "/map"
+COVERAGE_GRID_TOPIC = "/coverage_grid"
+PLANNED_PATH_TOPIC = "/planned_path"
+TELEMETRY_STATE_TOPIC = "/telemetry/state"
 
 # Read-only FCU telemetry, subscribed directly via rosbridge -- same
 # pattern already used for BATTERY_TOPIC/POSE_TOPIC above (both already
@@ -57,6 +68,9 @@ _SUBSCRIBED_TOPIC_TYPES = {
     VELOCITY_TOPIC: "geometry_msgs/TwistStamped",
     GPS_TOPIC: "sensor_msgs/NavSatFix",
     IMU_TOPIC: "sensor_msgs/Imu",
+    COVERAGE_GRID_TOPIC: "nav_msgs/OccupancyGrid",
+    PLANNED_PATH_TOPIC: "nav_msgs/Path",
+    TELEMETRY_STATE_TOPIC: "std_msgs/String",
 }
 _COMMAND_TOPIC_TYPE = "std_msgs/String"
 VALID_COMMANDS = ("start", "abort")
@@ -109,6 +123,20 @@ class RosBridgeClient:
                     self._statustext_history.append(message)
                     if len(self._statustext_history) > _STATUSTEXT_HISTORY:
                         self._statustext_history.pop(0)
+                elif topic == TELEMETRY_STATE_TOPIC:
+                    # std_msgs/String carrying a JSON-encoded normalized
+                    # telemetry contract (see
+                    # CHECKPOINT/docs/gcs_telemetry_contract.md) -- cache
+                    # the *parsed* dict, not the raw String wrapper, so
+                    # latest(TELEMETRY_STATE_TOPIC) returns the contract
+                    # directly. A malformed payload is dropped (logged via
+                    # the exception being swallowed here), not allowed to
+                    # crash the roslibpy callback thread or poison the
+                    # cache with stale/partial data.
+                    try:
+                        self._latest[topic] = json.loads(message["data"])
+                    except (KeyError, TypeError, json.JSONDecodeError):
+                        pass
                 else:
                     self._latest[topic] = message
 

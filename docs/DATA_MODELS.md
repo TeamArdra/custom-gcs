@@ -50,7 +50,14 @@ GCS should not assume this pose is automatically trustworthy; if the
 drone-side telemetry ever exposes a confidence/validity flag, surface it
 (see `LinkHealth`, §6 below) rather than rendering position blindly.
 
-## 4. 2D Map — `/slam/map`
+## 4. 2D Map — `/map`
+
+**Renamed from `/slam/map`** by the NIDAR Autonomy Migration (see
+`CHECKPOINT/CURRENT_STATE.md`) — nothing had ever published to `/slam/map`
+(it was a Phase-0-era placeholder), so this is a strict fill-in, not a
+breaking change to a working consumer. Full contract, including the
+sibling topics below:
+`CHECKPOINT/docs/gcs_telemetry_contract.md`.
 
 **Type:** `nav_msgs/OccupancyGrid` (standard — this is the right call, see
 D-1/D-7a). Published 1–5 Hz, **full grid each time** (not incremental —
@@ -82,6 +89,41 @@ along a 1 m cell's boundary — this works as long as the *source* SLAM
 resolution was fine enough to place occupied cells accurately relative to
 the 1 m grid lines (D-7a).
 
+### 4.1 Coverage Grid — `/coverage_grid`
+
+**New, added by the NIDAR Autonomy Migration.** Same `nav_msgs/
+OccupancyGrid` shape as `/map` above, but different cell semantics: this
+grid answers "has the camera actually looked here", not "is this a wall".
+`-1` unknown (not yet mapped as free), `0` free but not yet searched,
+`100` searched. Distinct from `/map` because mapping where the walls are
+is not the same as pointing the camera into every place a survivor could
+be — see `CHECKPOINT/docs/gcs_telemetry_contract.md` and
+`onboard-autonomy/nidar_autonomy/coverage_grid.py`.
+
+### 4.2 Planned Path — `/planned_path`
+
+**New, added by the NIDAR Autonomy Migration.** Standard `nav_msgs/Path`,
+`frame_id: "map"` — the vehicle's current planned route, as produced by
+`onboard-autonomy`'s own path planner (not duplicated into
+`/telemetry/state`; see 4.3). A suggestion for visualization only — see
+`onboard-autonomy/nidar_autonomy/frontier_explorer_node.py`'s module
+docstring for why this never implies the vehicle is actually flying it
+(no autonomous flight-control setpoint issuance exists yet).
+
+### 4.3 Normalized Telemetry — `/telemetry/state`
+
+**New, added by the NIDAR Autonomy Migration.** `std_msgs/String`
+carrying one JSON-encoded object (schema versioned, `schema_version: 1`),
+built by `onboard-autonomy/nidar_autonomy/telemetry_bridge_node.py` from
+`telemetry_contract.py`. Lightweight *summaries* only (map
+resolution/dims, coverage percent, autonomy state, sensor health, counts)
+— never the full occupancy grid or path data, which stay on their own
+native topics above. Full JSON shape, field-by-field:
+`CHECKPOINT/docs/gcs_telemetry_contract.md`. The GCS backend flattens
+this into `TelemetryResponse.{autonomy,sensors,mapping,navigation}` (see
+`gcs/backend/app/schemas.py`) alongside the pre-existing mavros-sourced
+fields, which are unaffected by this addition.
+
 ## 5. Survivor Tags — `/vision/survivors`
 
 **Type:** custom (proposed — not a standard ROS message; needs a `.msg`
@@ -91,7 +133,7 @@ re-detection/confidence update for an existing survivor).
 ```jsonc
 {
   "survivor_id": 3,             // stable int/string id — re-detections update, not duplicate; capped at 6 distinct ids
-  "x": 7.2,                     // meters, same origin/frame as /slam/map
+  "x": 7.2,                     // meters, same origin/frame as /map
   "y": 5.4,
   "confidence": 0.88
 }
@@ -99,7 +141,7 @@ re-detection/confidence update for an existing survivor).
 
 The GCS is responsible for quantizing `(x, y)` into the shared 1 m grid
 cell (`floor((x - origin_x)/1.0)`, `floor((y - origin_y)/1.0)`) using the
-*same* `origin`/`resolution` as whatever `/slam/map` last reported — this
+*same* `origin`/`resolution` as whatever `/map` last reported — this
 keeps the Jetson-side message simple (raw meters) while guaranteeing tags
 and map stay aligned. A 7th distinct `survivor_id` should be treated as a
 data/integration bug to surface, not silently accepted (rules cap at 6).

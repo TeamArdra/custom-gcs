@@ -18,10 +18,18 @@ from dataclasses import dataclass
 MISSION_STATE_TOPIC = "/mission/state"
 BATTERY_TOPIC = "/mavros/battery"
 POSE_TOPIC = "/mavros/local_position/pose"
-MAP_TOPIC = "/slam/map"
+# `/map` supersedes the never-implemented `/slam/map` placeholder -- see
+# docs/DATA_MODELS.md's changelog note (NIDAR Autonomy Migration).
+MAP_TOPIC = "/map"
 SURVIVORS_TOPIC = "/vision/survivors"
 HEARTBEAT_TOPIC = "/gcs/heartbeat"
 COMMAND_TOPIC = "/gcs/command"
+
+# Mapping/exploration/telemetry topics, added alongside the migration --
+# see CHECKPOINT/docs/gcs_telemetry_contract.md for the full shape.
+COVERAGE_GRID_TOPIC = "/coverage_grid"
+PLANNED_PATH_TOPIC = "/planned_path"
+TELEMETRY_STATE_TOPIC = "/telemetry/state"
 
 # Drone -> GCS topics this simulator publishes. Video is deliberately
 # excluded (docs/DECISIONS.md D-6 — not sent over rosbridge).
@@ -32,6 +40,9 @@ PUBLISHED_TOPICS = (
     MAP_TOPIC,
     SURVIVORS_TOPIC,
     HEARTBEAT_TOPIC,
+    COVERAGE_GRID_TOPIC,
+    PLANNED_PATH_TOPIC,
+    TELEMETRY_STATE_TOPIC,
 )
 
 _VALID_OPS = frozenset({"subscribe", "unsubscribe", "publish", "advertise", "unadvertise"})

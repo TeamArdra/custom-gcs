@@ -6,8 +6,10 @@
 import type {
   CommandResponse,
   Command,
+  CoverageResponse,
   HealthResponse,
   MapResponse,
+  PathResponse,
   SurvivorResponse,
   TelemetryResponse,
 } from "./types";
@@ -45,6 +47,14 @@ export function getTelemetry(): Promise<TelemetryResponse> {
 
 export function getMap(): Promise<MapResponse> {
   return getJson<MapResponse>("/api/map");
+}
+
+export function getCoverage(): Promise<CoverageResponse> {
+  return getJson<CoverageResponse>("/api/coverage");
+}
+
+export function getPath(): Promise<PathResponse> {
+  return getJson<PathResponse>("/api/path");
 }
 
 export function getSurvivors(): Promise<SurvivorResponse[]> {

@@ -65,6 +65,44 @@ export interface FcuStateResponse {
   system_status: number | null;
 }
 
+// Structured "Active Thinking" panel state -- fixed vocabulary only, never
+// free-form/LLM-generated text. See
+// CHECKPOINT/docs/gcs_telemetry_contract.md.
+export interface AutonomyStateResponse {
+  state: string | null;
+  objective: string | null;
+  target: [number, number] | null;
+  next_action: string | null;
+}
+
+export interface SensorsResponse {
+  slam: string | null;
+  lidar: string | null;
+  rangefinder: string | null;
+  camera: string | null;
+}
+
+// Lightweight mapping *summary* -- the full occupancy grid is fetched
+// separately via getMap(), not duplicated here.
+export interface MappingStatusResponse {
+  available: boolean;
+  resolution_m: number | null;
+  width_cells: number | null;
+  height_cells: number | null;
+  origin_x: number | null;
+  origin_y: number | null;
+  coverage_cell_size_m: number | null;
+  explored_pct: number | null;
+}
+
+export interface NavigationResponse {
+  target: [number, number] | null;
+  frontier_count: number | null;
+  candidate_count: number | null;
+  blacklisted_count: number | null;
+  geofence_breached: boolean | null;
+}
+
 export interface TelemetryResponse {
   connected: boolean;
   mission_state: string | null;
@@ -76,6 +114,10 @@ export interface TelemetryResponse {
   gps: GpsResponse | null;
   statustext: StatusTextResponse[];
   heartbeat_age_s: number | null;
+  autonomy: AutonomyStateResponse;
+  sensors: SensorsResponse;
+  mapping: MappingStatusResponse;
+  navigation: NavigationResponse;
 }
 
 export interface MapResponse {
@@ -83,6 +125,25 @@ export interface MapResponse {
   width: number | null;
   height: number | null;
   data: number[] | null;
+}
+
+// Same shape as MapResponse -- the coverage grid is also a
+// nav_msgs/OccupancyGrid, just with different cell semantics (-1=unknown,
+// 0=free-not-yet-searched, 100=searched).
+export interface CoverageResponse {
+  resolution: number | null;
+  width: number | null;
+  height: number | null;
+  data: number[] | null;
+}
+
+export interface PathPointResponse {
+  x: number;
+  y: number;
+}
+
+export interface PathResponse {
+  points: PathPointResponse[];
 }
 
 export interface SurvivorResponse {

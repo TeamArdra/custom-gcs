@@ -15,6 +15,13 @@ const TELEMETRY: TelemetryResponse = {
   gps: { fix_status: 3, satellites_visible: 9, latitude: 12.9, longitude: 77.6, altitude: 900 },
   statustext: [{ severity: 6, text: "boot complete" }],
   heartbeat_age_s: 0.3,
+  autonomy: { state: "SEARCHING_FRONTIER", objective: "Explore unexplored region", target: null, next_action: "Navigate to frontier" },
+  sensors: { slam: "ok", lidar: "ok", rangefinder: "not_integrated", camera: "not_integrated" },
+  mapping: {
+    available: false, resolution_m: null, width_cells: null, height_cells: null,
+    origin_x: null, origin_y: null, coverage_cell_size_m: null, explored_pct: null,
+  },
+  navigation: { target: null, frontier_count: null, candidate_count: null, blacklisted_count: null, geofence_breached: null },
 };
 
 afterEach(() => {
@@ -25,6 +32,8 @@ describe("App", () => {
   it("renders operator panels and reflects telemetry once loaded", async () => {
     vi.spyOn(api, "getTelemetry").mockResolvedValue(TELEMETRY);
     vi.spyOn(api, "getMap").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getPath").mockResolvedValue({ points: [] });
     vi.spyOn(api, "getSurvivors").mockResolvedValue([]);
     vi.spyOn(api, "getHealth").mockResolvedValue({
       connected: true,
@@ -46,6 +55,8 @@ describe("App", () => {
   it("shows a telemetry-fetch-failed banner instead of a blank page on failure", async () => {
     vi.spyOn(api, "getTelemetry").mockRejectedValue(new Error("network error"));
     vi.spyOn(api, "getMap").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getPath").mockResolvedValue({ points: [] });
     vi.spyOn(api, "getSurvivors").mockResolvedValue([]);
     vi.spyOn(api, "getHealth").mockResolvedValue({
       connected: false,

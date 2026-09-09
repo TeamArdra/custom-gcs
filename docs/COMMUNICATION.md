@@ -80,10 +80,24 @@ directions, reflecting the working ROS topic list (D-2, D-13):
 | `/mission/state` | custom (`std_msgs/String` minimum) | Drone → GCS | On change | Yes — "mission progress and completion status" |
 | `/mavros/battery` | `sensor_msgs/BatteryState` | Drone → GCS | 1–2 Hz | Yes — vehicle health, feeds "mission status" |
 | `/mavros/local_position/pose` | `geometry_msgs/PoseStamped` | Drone → GCS | 10+ Hz | Yes — "drone position or estimated drone position" |
-| `/slam/map` | `nav_msgs/OccupancyGrid`, full grid each publish | Drone → GCS | 1–5 Hz | Yes — "2D map...continuously updated" |
+| `/map` | `nav_msgs/OccupancyGrid`, full grid each publish | Drone → GCS | 1–5 Hz | Yes — "2D map...continuously updated" |
+| `/coverage_grid` | `nav_msgs/OccupancyGrid` (searched/unsearched, not walls) | Drone → GCS | ~4 Hz | Supports "explored/search coverage" visualization |
+| `/planned_path` | `nav_msgs/Path` | Drone → GCS | On replan | Supports "planned path" visualization |
+| `/telemetry/state` | custom, normalized JSON (`std_msgs/String`) | Drone → GCS | ~2 Hz | Supports autonomy/mapping/navigation state, sensor health |
 | `/vision/survivors` | custom (D-13) | Drone → GCS | On detection | Yes — "grid coordinate...containing each detected survivor" |
 | `/gcs/heartbeat` | custom, minimal | Drone → GCS | 1 Hz | Not explicitly required; recommended (link liveness) |
 | `/gcs/command` | custom (`std_msgs/String`, `"start"`/`"abort"`) | **GCS → Drone** | On operator action | Yes — the *only* two permitted operator actions |
+
+**Updated by the NIDAR Autonomy Migration** (folding gps_denied/raj-dev's
+mapping/exploration/telemetry stack into `onboard-autonomy` as the single
+canonical autonomy system — see `CHECKPOINT/CURRENT_STATE.md`): `/map`
+supersedes the `/slam/map` name this table previously used (nothing had
+ever published to it); `/coverage_grid`, `/planned_path`, and
+`/telemetry/state` are new. Full shape and rationale for each:
+`CHECKPOINT/docs/gcs_telemetry_contract.md`. `/telemetry/state` is a
+read-only *summary* — it does not duplicate `/map`'s/`/coverage_grid`'s
+full cell data or `/planned_path`'s full pose list, which stay on their
+own native topics (see that doc's "two kinds of topic" section).
 
 No other message type should exist on this channel. In particular: **no
 waypoint, no path correction, no map-edit, no tag-correction, no

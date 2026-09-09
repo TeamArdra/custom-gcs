@@ -18,7 +18,8 @@ python -m rosbridge_sim --help                # see all options (duration, arena
 
 Then, from any rosbridge/roslibjs-compatible client: subscribe to
 `/mission/state`, `/mavros/battery`, `/mavros/local_position/pose`,
-`/slam/map`, `/vision/survivors`, or `/gcs/heartbeat`, and publish
+`/map`, `/coverage_grid`, `/planned_path`, `/telemetry/state`,
+`/vision/survivors`, or `/gcs/heartbeat`, and publish
 `{"op":"publish","topic":"/gcs/command","msg":{"data":"start"}}` (or
 `"abort"`) to drive the mission — that command channel is the *only*
 inbound message this simulator accepts, matching the real operator

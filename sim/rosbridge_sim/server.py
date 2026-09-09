@@ -13,6 +13,7 @@ where "start" / "abort" from the GCS take effect (docs/DECISIONS.md D-10).
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import websockets
@@ -22,11 +23,14 @@ from .mission import MissionSimulator
 from .protocol import (
     BATTERY_TOPIC,
     COMMAND_TOPIC,
+    COVERAGE_GRID_TOPIC,
     HEARTBEAT_TOPIC,
     MAP_TOPIC,
     MISSION_STATE_TOPIC,
+    PLANNED_PATH_TOPIC,
     POSE_TOPIC,
     SURVIVORS_TOPIC,
+    TELEMETRY_STATE_TOPIC,
     ProtocolError,
     encode_publish,
     is_valid_command,
@@ -90,6 +94,7 @@ class SimServer:
         pose_interval: float = 0.1,
         map_interval: float = 0.5,
         check_interval: float = 0.2,
+        telemetry_state_interval: float = 0.5,
     ) -> None:
         self.mission = mission
         self.host = host
@@ -101,6 +106,7 @@ class SimServer:
         self._pose_interval = pose_interval
         self._map_interval = map_interval
         self._check_interval = check_interval
+        self._telemetry_state_interval = telemetry_state_interval
 
         self._clients: dict[ServerConnection, set[str]] = {}
         self._latched: dict[str, list[dict]] = {topic: [] for topic in _LATCHED_TOPICS}
@@ -119,6 +125,8 @@ class SimServer:
             asyncio.create_task(self._loop_pose()),
             asyncio.create_task(self._loop_map()),
             asyncio.create_task(self._loop_survivors_and_state()),
+            asyncio.create_task(self._loop_coverage_and_path()),
+            asyncio.create_task(self._loop_telemetry_state()),
         ]
         sock = self._ws_server.sockets[0]
         return sock.getsockname()[1]
@@ -219,6 +227,22 @@ class SimServer:
             elapsed = self.control.elapsed_s(time.monotonic())
             await self._broadcast(MAP_TOPIC, self.mission.occupancy_grid_at(elapsed, stamp_sec=int(elapsed)))
             await asyncio.sleep(self._map_interval)
+
+    async def _loop_coverage_and_path(self) -> None:
+        while True:
+            elapsed = self.control.elapsed_s(time.monotonic())
+            await self._broadcast(COVERAGE_GRID_TOPIC, self.mission.coverage_grid_at(elapsed, stamp_sec=int(elapsed)))
+            await self._broadcast(PLANNED_PATH_TOPIC, self.mission.planned_path_at(elapsed, stamp_sec=int(elapsed)))
+            await asyncio.sleep(self._map_interval)
+
+    async def _loop_telemetry_state(self) -> None:
+        while True:
+            now = time.monotonic()
+            elapsed = self.control.elapsed_s(now)
+            phase = self.control.phase(now, self.mission)
+            contract = self.mission.telemetry_state_at(elapsed, phase)
+            await self._broadcast(TELEMETRY_STATE_TOPIC, {"data": json.dumps(contract)})
+            await asyncio.sleep(self._telemetry_state_interval)
 
     async def _loop_survivors_and_state(self) -> None:
         """Combined on-change / on-detection loop: cheap to poll at a

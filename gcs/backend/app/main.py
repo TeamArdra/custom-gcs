@@ -25,26 +25,36 @@ from fastapi.staticfiles import StaticFiles
 from .config import Settings, get_settings
 from .ros_client import (
     BATTERY_TOPIC,
+    COVERAGE_GRID_TOPIC,
     FCU_STATE_TOPIC,
     GPS_TOPIC,
     HEARTBEAT_TOPIC,
     IMU_TOPIC,
     MAP_TOPIC,
     MISSION_STATE_TOPIC,
+    PLANNED_PATH_TOPIC,
     POSE_TOPIC,
+    TELEMETRY_STATE_TOPIC,
     VELOCITY_TOPIC,
     RosBridgeClient,
 )
 from .schemas import (
     AttitudeResponse,
+    AutonomyStateResponse,
     BatteryResponse,
     CommandResponse,
+    CoverageResponse,
     FcuStateResponse,
     GpsResponse,
     HealthResponse,
     MapResponse,
+    MappingStatusResponse,
+    NavigationResponse,
+    PathPointResponse,
+    PathResponse,
     PoseResponse,
     PositionResponse,
+    SensorsResponse,
     StatusTextResponse,
     SurvivorResponse,
     TelemetryResponse,
@@ -110,6 +120,17 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
         orientation = imu_msg.get("orientation")
         gps_status = gps_msg.get("status") or {}
 
+        # Mapping/exploration/planning/autonomy state -- sourced entirely
+        # from /telemetry/state (onboard-autonomy's normalized contract),
+        # already parsed to a dict by RosBridgeClient. Missing/not-yet-
+        # published fields fall back to each response model's own
+        # defaults (never fabricated) rather than raising.
+        telemetry_state = ros_client.latest(TELEMETRY_STATE_TOPIC) or {}
+        autonomy = telemetry_state.get("autonomy") or {}
+        sensors = telemetry_state.get("sensors") or {}
+        mapping = telemetry_state.get("mapping") or {}
+        navigation = telemetry_state.get("navigation") or {}
+
         return TelemetryResponse(
             connected=ros_client.is_connected,
             mission_state=state_msg.get("data"),
@@ -142,6 +163,35 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
                 for m in ros_client.statustext_history()
             ],
             heartbeat_age_s=ros_client.age_s(HEARTBEAT_TOPIC),
+            autonomy=AutonomyStateResponse(
+                state=autonomy.get("state"),
+                objective=autonomy.get("objective"),
+                target=autonomy.get("target"),
+                next_action=autonomy.get("next_action"),
+            ),
+            sensors=SensorsResponse(
+                slam=sensors.get("slam"),
+                lidar=sensors.get("lidar"),
+                rangefinder=sensors.get("rangefinder"),
+                camera=sensors.get("camera"),
+            ),
+            mapping=MappingStatusResponse(
+                available=bool(mapping.get("available", False)),
+                resolution_m=mapping.get("resolution_m"),
+                width_cells=mapping.get("width_cells"),
+                height_cells=mapping.get("height_cells"),
+                origin_x=mapping.get("origin_x"),
+                origin_y=mapping.get("origin_y"),
+                coverage_cell_size_m=mapping.get("coverage_cell_size_m"),
+                explored_pct=mapping.get("explored_pct"),
+            ),
+            navigation=NavigationResponse(
+                target=navigation.get("target"),
+                frontier_count=navigation.get("frontier_count"),
+                candidate_count=navigation.get("candidate_count"),
+                blacklisted_count=navigation.get("blacklisted_count"),
+                geofence_breached=navigation.get("geofence_breached"),
+            ),
         )
 
     @app.get("/api/map", response_model=MapResponse, tags=["map"])
@@ -156,6 +206,33 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
             height=info.get("height"),
             data=msg.get("data"),
         )
+
+    @app.get("/api/coverage", response_model=CoverageResponse, tags=["map"])
+    def coverage_snapshot() -> CoverageResponse:
+        msg = ros_client.latest(COVERAGE_GRID_TOPIC)
+        if msg is None:
+            return CoverageResponse()
+        info = msg.get("info", {})
+        return CoverageResponse(
+            resolution=info.get("resolution"),
+            width=info.get("width"),
+            height=info.get("height"),
+            data=msg.get("data"),
+        )
+
+    @app.get("/api/path", response_model=PathResponse, tags=["map"])
+    def planned_path() -> PathResponse:
+        msg = ros_client.latest(PLANNED_PATH_TOPIC)
+        if msg is None:
+            return PathResponse()
+        points = [
+            PathPointResponse(
+                x=(pose.get("pose") or {}).get("position", {}).get("x", 0.0),
+                y=(pose.get("pose") or {}).get("position", {}).get("y", 0.0),
+            )
+            for pose in msg.get("poses", [])
+        ]
+        return PathResponse(points=points)
 
     @app.get("/api/survivors", response_model=list[SurvivorResponse], tags=["survivors"])
     def survivors() -> list[SurvivorResponse]:

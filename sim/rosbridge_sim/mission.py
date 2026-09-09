@@ -167,6 +167,127 @@ class MissionSimulator:
 
     # -- survivors -----------------------------------------------------
 
+    # -- coverage / planned path / normalized telemetry -----------------
+    #
+    # Added alongside the NIDAR Autonomy Migration (see
+    # CHECKPOINT/CURRENT_STATE.md) so custom-gcs's map/coverage/path/
+    # autonomy-state rendering can be exercised end-to-end against this
+    # simulator, the same way pose/battery/map already are. Deliberately
+    # simple: coverage here just mirrors "revealed and free" (a real
+    # coverage_tracker.py lags behind mapping and needs camera FOV/LOS --
+    # see onboard-autonomy/nidar_autonomy/coverage_grid.py -- this
+    # simulator does not attempt to reproduce that fidelity, only the
+    # wire shape and basic reveal-over-time behavior a GCS panel needs to
+    # be tested against).
+
+    def coverage_grid_at(self, elapsed_s: float, *, stamp_sec: int = 0) -> dict:
+        revealed = self.revealed_cells_at(elapsed_s)
+        data = [gridmod.UNKNOWN] * (self.config.width * self.config.height)
+        for r, c in revealed:
+            if self._ground_truth[r][c] == gridmod.FREE:
+                data[r * self.config.width + c] = 100  # SEARCHED
+        return {
+            "header": {"stamp": {"sec": stamp_sec, "nanosec": 0}, "frame_id": "map"},
+            "info": {
+                "resolution": self.config.resolution,
+                "width": self.config.width,
+                "height": self.config.height,
+                "origin": {
+                    "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+                    "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+                },
+            },
+            "data": data,
+        }
+
+    def planned_path_at(self, elapsed_s: float, *, stamp_sec: int = 0) -> dict:
+        """A short nav_msgs/Path from the current simulated position toward
+        the next few not-yet-revealed frontier cells -- just enough for a
+        GCS panel to have something real to render, not a real planner
+        output."""
+        revealed = self.revealed_cells_at(elapsed_s)
+        current_index = len(revealed) - 1
+        lookahead = self._reveal_order[current_index : current_index + 6]
+        poses = []
+        for row, col in lookahead:
+            x, y = _cell_center_xy(row, col, self.config.resolution)
+            poses.append(
+                {
+                    "header": {"stamp": {"sec": stamp_sec, "nanosec": 0}, "frame_id": "map"},
+                    "pose": {"position": {"x": x, "y": y, "z": 0.0}, "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}},
+                }
+            )
+        return {
+            "header": {"stamp": {"sec": stamp_sec, "nanosec": 0}, "frame_id": "map"},
+            "poses": poses,
+        }
+
+    def telemetry_state_at(self, elapsed_s: float, phase: str) -> dict:
+        """The normalized `/telemetry/state` contract (see
+        CHECKPOINT/docs/gcs_telemetry_contract.md), built from this same
+        simulator's already-deterministic state -- not a second source of
+        truth, just a different shape over the same numbers."""
+        revealed = self.revealed_cells_at(elapsed_s)
+        total_cells = self.config.width * self.config.height
+        explored_pct = round(100.0 * len(revealed) / total_cells, 1)
+        pose = self.pose_at(elapsed_s)
+        position = pose["pose"]["position"]
+
+        current_index = len(revealed) - 1
+        target = None
+        if current_index + 1 < len(self._reveal_order):
+            trow, tcol = self._reveal_order[current_index + 1]
+            target = list(_cell_center_xy(trow, tcol, self.config.resolution))
+
+        autonomy_state = {
+            "idle": ("IDLE", "Awaiting mission start", "Wait for GCS start"),
+            "entering": ("ENTERING", "Arm and enter the arena", "Hold for arming confirmation"),
+            "searching": ("SEARCHING_FRONTIER", "Explore unexplored region", "Navigate to frontier"),
+            "exiting": ("RETURNING_TO_ENTRY", "Return to entry/exit point", "Navigate to entry"),
+            "complete": ("MISSION_COMPLETE", "Mission complete", "Land and disarm"),
+            "aborted": ("ABORTED", "Mission aborted", "Hold -- awaiting ground reset"),
+        }.get(phase, ("UNKNOWN", "Unknown", "Unknown"))
+
+        return {
+            "schema_version": 1,
+            "stamp": elapsed_s,
+            "connection": {"connected": True, "heartbeat_age_sec": 0.1},
+            "flight": {"armed": phase not in ("idle", "aborted"), "mode": "GUIDED", "system_status": 4,
+                       "battery_pct": self.battery_at(elapsed_s)["percentage"] * 100.0},
+            "position": {"x": position["x"], "y": position["y"], "z": position["z"],
+                        "yaw_deg": 0.0, "velocity_mps": 0.3},
+            "sensors": {"slam": "ok", "lidar": "ok", "rangefinder": "not_integrated", "camera": "not_integrated"},
+            "mapping": {
+                "available": True,
+                "resolution_m": self.config.resolution,
+                "width_cells": self.config.width,
+                "height_cells": self.config.height,
+                "origin_x": 0.0,
+                "origin_y": 0.0,
+                "coverage_cell_size_m": self.config.resolution,
+                "explored_pct": explored_pct,
+            },
+            "navigation": {
+                "target": target,
+                "frontier_count": 1 if target is not None else 0,
+                "candidate_count": 1 if target is not None else 0,
+                "blacklisted_count": 0,
+                "path_progress": None,
+                "brake_active": False,
+                "escaping_local_minimum": False,
+                "map_local_offset_m": 0.0,
+                "geofence_breached": False,
+            },
+            "autonomy": {
+                "state": autonomy_state[0],
+                "objective": autonomy_state[1],
+                "target": target,
+                "next_action": autonomy_state[2],
+            },
+            "mission": {"state": phase, "elapsed_sec": elapsed_s, "complete": phase == "complete"},
+            "survivors": [],
+        }
+
     def survivors_detected_at(self, elapsed_s: float) -> list[dict]:
         detected = [s for s in self._survivors if s.detect_at_s <= elapsed_s]
         out = []

@@ -8,6 +8,7 @@ import PositionVelocityPanel from "./components/PositionVelocityPanel";
 import AttitudePanel from "./components/AttitudePanel";
 import StatusTextPanel from "./components/StatusTextPanel";
 import MapPanel from "./components/MapPanel";
+import AutonomyPanel from "./components/AutonomyPanel";
 import SurvivorsPanel from "./components/SurvivorsPanel";
 import Footer from "./components/Footer";
 
@@ -35,9 +36,10 @@ export default function App() {
         <BatteryPanel telemetry={telemetry} />
         <PositionVelocityPanel telemetry={telemetry} />
         <AttitudePanel telemetry={telemetry} />
-        <MapPanel />
+        <AutonomyPanel telemetry={telemetry} />
         <SurvivorsPanel />
         <StatusTextPanel telemetry={telemetry} />
+        <MapPanel telemetry={telemetry} />
       </div>
 
       <Footer />

@@ -139,7 +139,7 @@ async def test_map_message_shape_over_the_wire():
     server, port = await _running_server()
     try:
         async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
-            await _subscribe(ws, "/slam/map")
+            await _subscribe(ws, "/map")
             msg = await _recv_json(ws)
             grid = msg["msg"]
             assert grid["info"]["width"] * grid["info"]["height"] == len(grid["data"])
