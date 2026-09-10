@@ -47,6 +47,17 @@ describe("App", () => {
     vi.spyOn(api, "getSimulationCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
     vi.spyOn(api, "getSimulationPath").mockResolvedValue({ points: [] });
     vi.spyOn(api, "getSurvivors").mockResolvedValue([]);
+    vi.spyOn(api, "getPerceptionDetections").mockResolvedValue({
+      frame_width: null, frame_height: null, timestamp: null, detections: [],
+    });
+    vi.spyOn(api, "getPerceptionStatus").mockResolvedValue({
+      camera_connected: null, detector_enabled: null, detector_ready: null, detector_backend: null,
+      model_name: null, person_count: null, fps: null, frame_width: null, frame_height: null,
+      last_detection_age_s: null,
+    });
+    vi.spyOn(api, "getCameraStatus").mockResolvedValue({
+      connected: null, stream_url: null, frame_width: null, frame_height: null, fps: null,
+    });
     vi.spyOn(api, "getHealth").mockResolvedValue({
       connected: true,
       rosbridge_host: "127.0.0.1",
@@ -82,6 +93,17 @@ describe("App", () => {
     vi.spyOn(api, "getSimulationCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
     vi.spyOn(api, "getSimulationPath").mockResolvedValue({ points: [] });
     vi.spyOn(api, "getSurvivors").mockResolvedValue([]);
+    vi.spyOn(api, "getPerceptionDetections").mockResolvedValue({
+      frame_width: null, frame_height: null, timestamp: null, detections: [],
+    });
+    vi.spyOn(api, "getPerceptionStatus").mockResolvedValue({
+      camera_connected: null, detector_enabled: null, detector_ready: null, detector_backend: null,
+      model_name: null, person_count: null, fps: null, frame_width: null, frame_height: null,
+      last_detection_age_s: null,
+    });
+    vi.spyOn(api, "getCameraStatus").mockResolvedValue({
+      connected: null, stream_url: null, frame_width: null, frame_height: null, fps: null,
+    });
     vi.spyOn(api, "getHealth").mockResolvedValue({
       connected: false,
       rosbridge_host: "127.0.0.1",
@@ -101,6 +123,17 @@ describe("App", () => {
     vi.spyOn(api, "getCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
     vi.spyOn(api, "getPath").mockResolvedValue({ points: [] });
     vi.spyOn(api, "getSurvivors").mockResolvedValue([]);
+    vi.spyOn(api, "getPerceptionDetections").mockResolvedValue({
+      frame_width: null, frame_height: null, timestamp: null, detections: [],
+    });
+    vi.spyOn(api, "getPerceptionStatus").mockResolvedValue({
+      camera_connected: null, detector_enabled: null, detector_ready: null, detector_backend: null,
+      model_name: null, person_count: null, fps: null, frame_width: null, frame_height: null,
+      last_detection_age_s: null,
+    });
+    vi.spyOn(api, "getCameraStatus").mockResolvedValue({
+      connected: null, stream_url: null, frame_width: null, frame_height: null, fps: null,
+    });
     vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
     const simStatusSpy = vi.spyOn(api, "getSimulationStatus");
 
@@ -123,6 +156,17 @@ describe("App", () => {
     vi.spyOn(api, "getCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
     vi.spyOn(api, "getPath").mockResolvedValue({ points: [] });
     vi.spyOn(api, "getSurvivors").mockResolvedValue([]);
+    vi.spyOn(api, "getPerceptionDetections").mockResolvedValue({
+      frame_width: null, frame_height: null, timestamp: null, detections: [],
+    });
+    vi.spyOn(api, "getPerceptionStatus").mockResolvedValue({
+      camera_connected: null, detector_enabled: null, detector_ready: null, detector_backend: null,
+      model_name: null, person_count: null, fps: null, frame_width: null, frame_height: null,
+      last_detection_age_s: null,
+    });
+    vi.spyOn(api, "getCameraStatus").mockResolvedValue({
+      connected: null, stream_url: null, frame_width: null, frame_height: null, fps: null,
+    });
     vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
     vi.spyOn(api, "getSimulationStatus").mockResolvedValue({
       source: "simulation", status: "idle", mission_state: "idle", step: 0, elapsed_sim_seconds: 0,

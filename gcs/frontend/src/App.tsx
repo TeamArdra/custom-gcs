@@ -10,6 +10,8 @@ import StatusTextPanel from "./components/StatusTextPanel";
 import MapPanel from "./components/MapPanel";
 import AutonomyPanel from "./components/AutonomyPanel";
 import SurvivorsPanel from "./components/SurvivorsPanel";
+import CameraPanel from "./components/CameraPanel";
+import PerceptionPanel from "./components/PerceptionPanel";
 import SimulationPanel from "./components/SimulationPanel";
 import Footer from "./components/Footer";
 
@@ -53,8 +55,10 @@ export default function App() {
         <AttitudePanel telemetry={telemetry} />
         <AutonomyPanel telemetry={telemetry} />
         <SurvivorsPanel />
+        <PerceptionPanel />
         <StatusTextPanel telemetry={telemetry} />
         <MapPanel telemetry={telemetry} />
+        <CameraPanel />
       </div>
 
       {simulationEnabled && (

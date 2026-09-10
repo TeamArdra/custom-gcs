@@ -146,6 +146,95 @@ keeps the Jetson-side message simple (raw meters) while guaranteeing tags
 and map stay aligned. A 7th distinct `survivor_id` should be treated as a
 data/integration bug to surface, not silently accepted (rules cap at 6).
 
+## 5A. Perception Detections (Development) — `/perception/detections`, `/perception/status`
+
+**Added 2026-09-10, NIDAR perception pipeline (dev pretrained detector).
+Distinct from §5 above — read that distinction carefully before touching
+either.** §5's `/vision/survivors` is a **confirmed, localized** survivor:
+world-frame `(x, y)` meters, capped at 6, meant to feed the map. This
+section's topics are **raw, unconfirmed, image-space** person detections
+from a pretrained (not NIDAR-trained) model, running purely as a
+development integration layer — a bounding box in pixel coordinates is
+*not* a survivor location, and nothing here ever invents a world
+coordinate from one. Nothing publishes `/vision/survivors` yet; this is
+not a replacement for that gap, it is a separate, additive contract that
+proves out the camera→detector→ROS→FastAPI→GCS pipeline so a future real
+NIDAR-trained detector *and* a future detection→localization fusion step
+(which would be the thing that finally publishes `/vision/survivors`) can
+slot in without rewriting any of this.
+
+Both `std_msgs/String` carrying one JSON-encoded object each
+(`schema_version: 1`), published by
+`onboard-autonomy/nidar_autonomy/perception/perception_node.py` — a
+read-only observer, same category as `telemetry_bridge_node.py` et al.
+(never touches mavros/arming/flight-control). Full architecture,
+model selection, and config: `onboard-autonomy/nidar_autonomy/perception/README.md`.
+
+### 5A.1 `/perception/detections`
+
+```jsonc
+{
+  "schema_version": 1,
+  "frame_width": 640,
+  "frame_height": 480,
+  "timestamp": 1234567890.123,
+  "detections": [
+    {
+      "detection_id": "a1b2c3...",
+      "class_name": "person",
+      "confidence": 0.94,
+      "bbox": { "x_min": 120, "y_min": 40, "x_max": 260, "y_max": 400 },
+      "center_x": 190, "center_y": 220,
+      "track_id": null,
+      "source": "huggingface",
+      "model_name": "Ultralytics/YOLO11/yolo11n.pt"
+    }
+  ]
+}
+```
+`bbox` is in pixel coordinates of the `frame_width x frame_height` image
+— never meters, never map-frame. The GCS backend flattens this into
+`PerceptionDetectionsResponse`/`DetectionResponse` (see
+`gcs/backend/app/schemas.py`), exposed read-only at
+`GET /api/perception/detections`.
+
+### 5A.2 `/perception/status`
+
+```jsonc
+{
+  "schema_version": 1,
+  "camera_connected": true,
+  "detector_enabled": true,
+  "detector_ready": true,
+  "detector_backend": "huggingface",
+  "model_name": "Ultralytics/YOLO11/yolo11n.pt",
+  "person_count": 2,
+  "fps": 8.3,
+  "frame_width": 640,
+  "frame_height": 480,
+  "video_stream_url": "http://<jetson-host>:8090/stream.mjpg",
+  "last_detection_age_s": 0.3,
+  "timestamp": 1234567890.123
+}
+```
+Flattened into `PerceptionStatusResponse` at `GET /api/perception/status`,
+and into `CameraStatusResponse` (camera-only fields, plus the constructed
+stream URL) at `GET /api/camera/status`.
+
+### 5A.3 Live video — MJPEG-over-HTTP, resolves D-6/D-3 for the dev pipeline
+
+Per D-6/D-3 (§7 below), video does not go over rosbridge. The Jetson's
+`perception_node.py` runs a small stdlib `http.server`-based MJPEG
+server directly (`video_stream.py`, `MJPEGStreamServer`), default
+`0.0.0.0:8090`, serving `/stream.mjpg` (multipart JPEG) and
+`/snapshot.jpg`. `GET /api/camera/status`'s `stream_url` field gives the
+frontend the full URL; the browser's `<img>`/`<canvas>` overlay
+(`CameraPanel.tsx`) fetches the actual video bytes **directly from the
+Jetson**, bypassing both rosbridge and the FastAPI backend for the media
+itself — the backend only ever relays the small JSON status/URL. See
+DECISIONS.md D-6 for this being recorded as the dev-pipeline
+implementation choice, not yet a final competition-hardware decision.
+
 ## 6. System Heartbeat — `/gcs/heartbeat`
 
 **Type:** custom, minimal (proposed: `std_msgs/Header` or an even simpler
@@ -169,6 +258,13 @@ frontend's `<video>` element, independent of roslibjs/rosbridge. See
 [DECISIONS.md](DECISIONS.md) D-6 for the reasoning (base64+JSON overhead,
 and — more importantly — risk of delaying the Abort command behind queued
 video frames on a shared connection).
+
+**Implemented for the dev pipeline as MJPEG-over-HTTP** — see §5A.3 above
+for the concrete implementation (`perception_node.py`'s `MJPEGStreamServer`,
+`GET /api/camera/status`'s `stream_url`). No `sensor_msgs/CompressedImage`
+ROS topic is published anywhere — the dev pipeline never needed the "would
+be" form above, it went straight to the off-rosbridge transport D-6
+recommends.
 
 ## 8. Commands — `/gcs/command` (GCS → Jetson)
 

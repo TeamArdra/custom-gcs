@@ -153,6 +153,62 @@ export interface SurvivorResponse {
   confidence: number;
 }
 
+// -- Perception (dev-only pretrained person-detector, image-space, raw
+// detections) -- deliberately NOT SurvivorResponse: a detection here is
+// unconfirmed and in image (pixel) coordinates, not a localized,
+// world-x/y survivor tag. See custom-gcs/CLAUDE.md and
+// gcs/backend/app/schemas.py's perception models.
+
+export interface BBox {
+  x_min: number | null;
+  y_min: number | null;
+  x_max: number | null;
+  y_max: number | null;
+}
+
+export interface Detection {
+  detection_id: string | null;
+  class_name: string | null;
+  confidence: number | null;
+  bbox: BBox;
+  center_x: number | null;
+  center_y: number | null;
+  track_id: string | null;
+  source: string | null;
+  model_name: string | null;
+}
+
+export interface PerceptionDetectionsResponse {
+  frame_width: number | null;
+  frame_height: number | null;
+  timestamp: number | null;
+  detections: Detection[];
+}
+
+export interface PerceptionStatusResponse {
+  camera_connected: boolean | null;
+  detector_enabled: boolean | null;
+  detector_ready: boolean | null;
+  detector_backend: string | null;
+  model_name: string | null;
+  person_count: number | null;
+  fps: number | null;
+  frame_width: number | null;
+  frame_height: number | null;
+  last_detection_age_s: number | null;
+}
+
+// Video bytes bypass the backend entirely (see docs/DECISIONS.md D-6) --
+// this endpoint only tells the frontend where to point an <img> tag, it
+// does not itself carry any video data.
+export interface CameraStatusResponse {
+  connected: boolean | null;
+  stream_url: string | null;
+  frame_width: number | null;
+  frame_height: number | null;
+  fps: number | null;
+}
+
 export interface CommandResponse {
   status: string;
   command: string;

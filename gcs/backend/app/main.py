@@ -30,6 +30,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
 from .config import Settings, get_settings
 from .ros_client import (
@@ -41,6 +42,8 @@ from .ros_client import (
     IMU_TOPIC,
     MAP_TOPIC,
     MISSION_STATE_TOPIC,
+    PERCEPTION_DETECTIONS_TOPIC,
+    PERCEPTION_STATUS_TOPIC,
     PLANNED_PATH_TOPIC,
     POSE_TOPIC,
     SIMULATION_COVERAGE_GRID_TOPIC,
@@ -57,6 +60,7 @@ from .schemas import (
     AttitudeResponse,
     AutonomyStateResponse,
     BatteryResponse,
+    CameraStatusResponse,
     CommandResponse,
     CoverageResponse,
     FcuStateResponse,
@@ -67,6 +71,8 @@ from .schemas import (
     NavigationResponse,
     PathPointResponse,
     PathResponse,
+    PerceptionDetectionsResponse,
+    PerceptionStatusResponse,
     PoseResponse,
     PositionResponse,
     SensorsResponse,
@@ -254,6 +260,64 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
     @app.get("/api/survivors", response_model=list[SurvivorResponse], tags=["survivors"])
     def survivors() -> list[SurvivorResponse]:
         return [SurvivorResponse(**s) for s in ros_client.survivors()]
+
+    # -- Perception pipeline (Jetson-side, development-only pretrained
+    # person-detector) -- read-only, and architecturally distinct from
+    # /api/survivors above: raw/unconfirmed/image-space vs.
+    # confirmed/localized/world-coordinate. See
+    # PerceptionDetectionsResponse/DetectionResponse docstrings in
+    # app/schemas.py. Video bytes never flow through this backend -- see
+    # docs/DECISIONS.md D-6 -- /api/camera/status only reports health/
+    # metadata plus the stream URL the frontend fetches directly.
+
+    @app.get(
+        "/api/perception/detections",
+        response_model=PerceptionDetectionsResponse,
+        tags=["perception"],
+    )
+    def perception_detections() -> PerceptionDetectionsResponse:
+        msg = ros_client.latest(PERCEPTION_DETECTIONS_TOPIC)
+        if not msg:
+            return PerceptionDetectionsResponse()
+        try:
+            return PerceptionDetectionsResponse(**msg)
+        except ValidationError:
+            # A cached-but-malformed upstream payload (wrong field type from
+            # a buggy/malfunctioning publisher) must degrade the same way
+            # "no data yet" does, not surface as a bare 500 to every caller.
+            return PerceptionDetectionsResponse()
+
+    @app.get(
+        "/api/perception/status",
+        response_model=PerceptionStatusResponse,
+        tags=["perception"],
+    )
+    def perception_status() -> PerceptionStatusResponse:
+        msg = ros_client.latest(PERCEPTION_STATUS_TOPIC)
+        if not msg:
+            return PerceptionStatusResponse()
+        allowed = set(PerceptionStatusResponse.model_fields)
+        try:
+            return PerceptionStatusResponse(**{k: v for k, v in msg.items() if k in allowed})
+        except ValidationError:
+            # See perception_detections above -- same degrade-not-500 rule.
+            return PerceptionStatusResponse()
+
+    @app.get("/api/camera/status", response_model=CameraStatusResponse, tags=["camera"])
+    def camera_status() -> CameraStatusResponse:
+        msg = ros_client.latest(PERCEPTION_STATUS_TOPIC)
+        connected = bool(msg.get("camera_connected")) if msg else None
+        try:
+            return CameraStatusResponse(
+                connected=connected,
+                stream_url=settings.camera_stream_url() if connected else None,
+                frame_width=(msg.get("frame_width") if msg else None),
+                frame_height=(msg.get("frame_height") if msg else None),
+                fps=(msg.get("fps") if msg else None),
+            )
+        except ValidationError:
+            # See perception_detections above -- same degrade-not-500 rule.
+            return CameraStatusResponse()
 
     @app.post("/api/command/start", response_model=CommandResponse, tags=["command"])
     def start_mission() -> CommandResponse:

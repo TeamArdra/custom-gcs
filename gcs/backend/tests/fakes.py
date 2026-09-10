@@ -6,7 +6,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.ros_client import VALID_COMMANDS, VALID_SIMULATION_COMMANDS
+from app.ros_client import (
+    PERCEPTION_DETECTIONS_TOPIC,
+    PERCEPTION_STATUS_TOPIC,
+    VALID_COMMANDS,
+    VALID_SIMULATION_COMMANDS,
+)
 
 
 class FakeRosBridgeClient:
@@ -26,6 +31,12 @@ class FakeRosBridgeClient:
 
     def latest(self, topic: str) -> Any:
         return self._latest.get(topic)
+
+    def set_perception_detections(self, data: dict) -> None:
+        self._latest[PERCEPTION_DETECTIONS_TOPIC] = data
+
+    def set_perception_status(self, data: dict) -> None:
+        self._latest[PERCEPTION_STATUS_TOPIC] = data
 
     def set_age_s(self, topic: str, age_s: float | None) -> None:
         self._ages[topic] = age_s

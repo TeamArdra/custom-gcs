@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getTelemetry, postCommand } from "./api";
+import { getCameraStatus, getPerceptionDetections, getPerceptionStatus, getTelemetry, postCommand } from "./api";
 
 // Direct replacement for the old prototype's raw-HTML string-matching
 // test -- verifies api.ts calls exactly the documented root-relative
@@ -45,6 +45,38 @@ describe("api.ts", () => {
     expect(url).toBe("/api/command/abort");
     expect(init).toMatchObject({ method: "POST" });
     expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("getPerceptionDetections calls exactly /api/perception/detections", async () => {
+    const fetchMock = mockFetchOnce({ frame_width: null, frame_height: null, timestamp: null, detections: [] });
+    await getPerceptionDetections();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/perception/detections");
+  });
+
+  it("getPerceptionStatus calls exactly /api/perception/status", async () => {
+    const fetchMock = mockFetchOnce({
+      camera_connected: null,
+      detector_enabled: null,
+      detector_ready: null,
+      detector_backend: null,
+      model_name: null,
+      person_count: null,
+      fps: null,
+      frame_width: null,
+      frame_height: null,
+      last_detection_age_s: null,
+    });
+    await getPerceptionStatus();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/perception/status");
+  });
+
+  it("getCameraStatus calls exactly /api/camera/status", async () => {
+    const fetchMock = mockFetchOnce({ connected: null, stream_url: null, frame_width: null, frame_height: null, fps: null });
+    await getCameraStatus();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/camera/status");
   });
 
   it("no call ever uses an absolute URL with a host", async () => {
