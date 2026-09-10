@@ -185,6 +185,18 @@ frontend's `<video>` element, independent of `rosbridge_server`.
 **Revisit when:** real link-bandwidth numbers exist from hardware testing;
 if rosbridge genuinely keeps up under load, this recommendation could be
 relaxed, but should be *proven*, not assumed.
+**Implemented for the dev pipeline, 2026-09-10:** the leading option above
+is now real code, not just a recommendation — `onboard-autonomy`'s
+`perception_node.py` runs a stdlib-`http.server` MJPEG endpoint directly
+on the Jetson (default `:8090/stream.mjpg`), and `custom-gcs`'s
+`CameraPanel.tsx` consumes it directly via an `<img>` tag, with the
+FastAPI backend only relaying the small JSON status/URL
+(`GET /api/camera/status`) — never the video bytes themselves. This
+**does not** close D-6 as a final decision: it's the dev-pipeline
+implementation of the already-leading option, still subject to revisit
+once real link-bandwidth/hardware numbers exist (the "Revisit when"
+above still applies) and once real RF hardware (D-1) is chosen. See
+`custom-gcs/docs/DATA_MODELS.md` §5A.3 for the concrete contract.
 
 ### D-10: Command channel (Start / Abort), GCS → Jetson
 **Status:** Open — **not yet defined**, and this is the single most
@@ -237,6 +249,9 @@ goes (off rosbridge), not just its codec. Original framing (MJPEG vs.
 RTSP vs. WebRTC) is still the live sub-question once D-6's "separate
 path" is agreed — leaning MJPEG-over-HTTP first for simplicity/link
 robustness, revisit if latency is a problem in testing.
+**Implemented for the dev pipeline, 2026-09-10:** MJPEG-over-HTTP, per
+D-6's update above — not WebRTC. Revisit if/when real-link latency
+testing shows it's insufficient.
 
 ### D-4: Grid coordinate labeling convention — mostly resolved by D-7
 **Status:** Mostly superseded by D-7 above (origin = entry/exit point,

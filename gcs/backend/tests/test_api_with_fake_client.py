@@ -230,6 +230,241 @@ def test_survivors_endpoint_reflects_client_state():
     assert body[0]["survivor_id"] == 1
 
 
+def test_perception_detections_before_any_data_received():
+    client, _ = make_client()
+    body = client.get("/api/perception/detections").json()
+    assert body == {
+        "frame_width": None,
+        "frame_height": None,
+        "timestamp": None,
+        "detections": [],
+    }
+
+
+def test_perception_detections_reflects_client_state_with_nested_bbox():
+    client, fake = make_client()
+    fake.set_perception_detections(
+        {
+            "frame_width": 1280,
+            "frame_height": 720,
+            "timestamp": 123.456,
+            "detections": [
+                {
+                    "detection_id": "det-1",
+                    "class_name": "person",
+                    "confidence": 0.91,
+                    "bbox": {"x_min": 10.0, "y_min": 20.0, "x_max": 110.0, "y_max": 220.0},
+                    "center_x": 60.0,
+                    "center_y": 120.0,
+                    "track_id": "t-1",
+                    "source": "yolov8n",
+                    "model_name": "yolov8n.pt",
+                },
+                {
+                    "detection_id": "det-2",
+                    "class_name": "person",
+                    "confidence": 0.75,
+                    "bbox": {"x_min": 300.0, "y_min": 40.0, "x_max": 380.0, "y_max": 260.0},
+                    "center_x": 340.0,
+                    "center_y": 150.0,
+                    "track_id": "t-2",
+                    "source": "yolov8n",
+                    "model_name": "yolov8n.pt",
+                },
+            ],
+        }
+    )
+
+    body = client.get("/api/perception/detections").json()
+
+    assert body["frame_width"] == 1280
+    assert body["frame_height"] == 720
+    assert body["timestamp"] == 123.456
+    assert len(body["detections"]) == 2
+    assert body["detections"][0]["detection_id"] == "det-1"
+    assert body["detections"][0]["bbox"] == {
+        "x_min": 10.0,
+        "y_min": 20.0,
+        "x_max": 110.0,
+        "y_max": 220.0,
+    }
+    assert body["detections"][1]["detection_id"] == "det-2"
+    assert body["detections"][1]["bbox"]["x_max"] == 380.0
+
+
+def test_perception_status_before_any_data_received():
+    client, _ = make_client()
+    body = client.get("/api/perception/status").json()
+    assert body == {
+        "camera_connected": None,
+        "detector_enabled": None,
+        "detector_ready": None,
+        "detector_backend": None,
+        "model_name": None,
+        "person_count": None,
+        "fps": None,
+        "frame_width": None,
+        "frame_height": None,
+        "last_detection_age_s": None,
+    }
+
+
+def test_perception_status_reflects_client_state_and_ignores_unexpected_keys():
+    client, fake = make_client()
+    fake.set_perception_status(
+        {
+            "camera_connected": True,
+            "detector_enabled": True,
+            "detector_ready": True,
+            "detector_backend": "onnxruntime",
+            "model_name": "yolov8n.pt",
+            "person_count": 2,
+            "fps": 12.5,
+            "frame_width": 1280,
+            "frame_height": 720,
+            "last_detection_age_s": 0.2,
+            "some_future_field_the_gcs_does_not_know_about": "unexpected",
+        }
+    )
+
+    resp = client.get("/api/perception/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["camera_connected"] is True
+    assert body["detector_backend"] == "onnxruntime"
+    assert body["person_count"] == 2
+    assert body["fps"] == 12.5
+    assert "some_future_field_the_gcs_does_not_know_about" not in body
+
+
+def test_camera_status_disconnected_has_no_stream_url():
+    client, fake = make_client()
+    fake.set_perception_status({"camera_connected": False})
+
+    body = client.get("/api/camera/status").json()
+
+    assert body["connected"] is False
+    assert body["stream_url"] is None
+
+
+def test_camera_status_before_any_data_received():
+    client, _ = make_client()
+    body = client.get("/api/camera/status").json()
+    assert body["connected"] is None
+    assert body["stream_url"] is None
+
+
+def test_camera_status_connected_builds_stream_url_from_settings():
+    client, fake = make_client()
+    fake.set_perception_status(
+        {"camera_connected": True, "frame_width": 1280, "frame_height": 720, "fps": 12.5}
+    )
+
+    body = client.get("/api/camera/status").json()
+
+    assert body["connected"] is True
+    assert body["stream_url"] == "http://127.0.0.1:8090/stream.mjpg"
+    assert body["frame_width"] == 1280
+    assert body["frame_height"] == 720
+    assert body["fps"] == 12.5
+
+
+def test_perception_detections_empty_dict_upstream_behaves_same_as_no_data_yet():
+    """An empty-but-present `{}` payload (e.g. the topic has been
+    advertised/echoed once with a blank body, distinct from never having
+    published at all) must still degrade to the same all-defaults
+    response as test_perception_detections_before_any_data_received --
+    the route's `if not msg` check treats `None` and `{}` identically, so
+    this pins that both code paths actually land on the same output."""
+    client, fake = make_client()
+    fake.set_perception_detections({})
+
+    body = client.get("/api/perception/detections").json()
+
+    assert body == {
+        "frame_width": None,
+        "frame_height": None,
+        "timestamp": None,
+        "detections": [],
+    }
+
+
+def test_perception_detections_malformed_upstream_field_type_degrades_to_defaults():
+    """A message that HAS arrived but has a field of the wrong type (e.g.
+    a non-numeric confidence) must degrade the same way "no data yet"
+    does (see the empty-dict test above), not surface as a bare 500 to
+    every caller: PerceptionDetectionsResponse(**msg) raises a pydantic
+    ValidationError inside the route body, which the route now catches
+    and falls back to the schema's own all-defaults response -- see the
+    test-engineer finding: unlike ros_client.py's own json.loads() guard
+    (which silently drops a malformed WIRE payload before it's ever
+    cached), the route layer must separately guard a malformed-but-
+    JSON-valid CACHED payload."""
+    fake = FakeRosBridgeClient()
+    fake.set_perception_detections(
+        {
+            "frame_width": 640,
+            "frame_height": 480,
+            "timestamp": 1.0,
+            "detections": [{"confidence": "high"}],
+        }
+    )
+    app = create_app(client=fake)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.get("/api/perception/detections")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "frame_width": None,
+        "frame_height": None,
+        "timestamp": None,
+        "detections": [],
+    }
+
+
+def test_perception_status_malformed_upstream_field_type_degrades_to_defaults():
+    fake = FakeRosBridgeClient()
+    fake.set_perception_status({"camera_connected": True, "person_count": "two"})
+    app = create_app(client=fake)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.get("/api/perception/status")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "camera_connected": None,
+        "detector_enabled": None,
+        "detector_ready": None,
+        "detector_backend": None,
+        "model_name": None,
+        "person_count": None,
+        "fps": None,
+        "frame_width": None,
+        "frame_height": None,
+        "last_detection_age_s": None,
+    }
+
+
+def test_camera_status_malformed_upstream_field_type_degrades_to_defaults():
+    fake = FakeRosBridgeClient()
+    fake.set_perception_status({"camera_connected": True, "frame_width": "big"})
+    app = create_app(client=fake)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.get("/api/camera/status")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "connected": None,
+        "stream_url": None,
+        "frame_width": None,
+        "frame_height": None,
+        "fps": None,
+    }
+
+
 def test_start_command_publishes_start_and_only_start():
     client, fake = make_client()
     resp = client.post("/api/command/start")
@@ -350,3 +585,18 @@ def test_no_route_exists_beyond_the_documented_command_surface():
     for path in forbidden_paths:
         assert client.post(path).status_code == 404
         assert client.put(path).status_code == 404
+
+
+def test_new_perception_and_camera_routes_are_get_only():
+    """The perception/camera routes added alongside coverage/survivors
+    are read-only, same guarantee as
+    test_no_route_exists_beyond_the_documented_command_surface above --
+    POST/PUT to any of them must 404, since they were never defined as
+    mutating routes."""
+    client, _ = make_client()
+    for path in ("/api/perception/detections", "/api/perception/status", "/api/camera/status"):
+        # The path itself exists (only GET is registered), so the
+        # wrong-method response is 405 Method Not Allowed, not 404 --
+        # either way, no mutation is possible via these paths.
+        assert client.post(path).status_code == 405
+        assert client.put(path).status_code == 405

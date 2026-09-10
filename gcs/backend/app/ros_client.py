@@ -38,6 +38,16 @@ COVERAGE_GRID_TOPIC = "/coverage_grid"
 PLANNED_PATH_TOPIC = "/planned_path"
 TELEMETRY_STATE_TOPIC = "/telemetry/state"
 
+# Perception pipeline (Jetson-side, development-only pretrained
+# person-detector) -- raw, unconfirmed, image-space detections, NOT the
+# same concept as SURVIVORS_TOPIC above (confirmed, localized, world-
+# coordinate). Both are std_msgs/String carrying JSON, same as
+# TELEMETRY_STATE_TOPIC. Video itself never goes through rosbridge -- see
+# docs/DECISIONS.md D-6 -- these two topics carry metadata/detections
+# only.
+PERCEPTION_DETECTIONS_TOPIC = "/perception/detections"
+PERCEPTION_STATUS_TOPIC = "/perception/status"
+
 # Simulation-only topics -- the GCS "RUN SIMULATION" path. Every name
 # lives under /simulation/, entirely separate from the real topics above
 # (see onboard-autonomy/nidar_autonomy/topics.py's "Simulation-only
@@ -89,6 +99,8 @@ _SUBSCRIBED_TOPIC_TYPES = {
     COVERAGE_GRID_TOPIC: "nav_msgs/OccupancyGrid",
     PLANNED_PATH_TOPIC: "nav_msgs/Path",
     TELEMETRY_STATE_TOPIC: "std_msgs/String",
+    PERCEPTION_DETECTIONS_TOPIC: "std_msgs/String",
+    PERCEPTION_STATUS_TOPIC: "std_msgs/String",
     SIMULATION_MISSION_STATE_TOPIC: "std_msgs/String",
     SIMULATION_STATUS_TOPIC: "std_msgs/String",
     SIMULATION_MAP_TOPIC: "nav_msgs/OccupancyGrid",
@@ -155,7 +167,12 @@ class RosBridgeClient:
                     self._statustext_history.append(message)
                     if len(self._statustext_history) > _STATUSTEXT_HISTORY:
                         self._statustext_history.pop(0)
-                elif topic in (TELEMETRY_STATE_TOPIC, SIMULATION_TELEMETRY_STATE_TOPIC):
+                elif topic in (
+                    TELEMETRY_STATE_TOPIC,
+                    SIMULATION_TELEMETRY_STATE_TOPIC,
+                    PERCEPTION_DETECTIONS_TOPIC,
+                    PERCEPTION_STATUS_TOPIC,
+                ):
                     # std_msgs/String carrying a JSON-encoded normalized
                     # telemetry contract (see
                     # CHECKPOINT/docs/gcs_telemetry_contract.md) -- cache

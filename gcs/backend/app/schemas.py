@@ -175,6 +175,77 @@ class SurvivorResponse(BaseModel):
     confidence: float
 
 
+class BBoxResponse(BaseModel):
+    """Image-space bounding box, in the source frame's own pixel
+    coordinates -- not world coordinates, and not resolved against the
+    grid SurvivorResponse uses."""
+
+    x_min: float | None = None
+    y_min: float | None = None
+    x_max: float | None = None
+    y_max: float | None = None
+
+
+class DetectionResponse(BaseModel):
+    """A single raw, unconfirmed detection from the development-only
+    pretrained person-detector running on the Jetson perception pipeline
+    (see /perception/detections in app/ros_client.py). Deliberately a
+    SEPARATE type from SurvivorResponse: this is image-space and
+    unconfirmed (no localization, no operator/mission confirmation),
+    where SurvivorResponse is world-coordinate and confirmed. Never merge
+    or repurpose one as the other."""
+
+    detection_id: str | None = None
+    class_name: str | None = None
+    confidence: float | None = None
+    bbox: BBoxResponse = BBoxResponse()
+    center_x: float | None = None
+    center_y: float | None = None
+    track_id: str | None = None
+    source: str | None = None
+    model_name: str | None = None
+
+
+class PerceptionDetectionsResponse(BaseModel):
+    """Snapshot of /perception/detections -- see DetectionResponse's
+    docstring for why this is architecturally distinct from
+    /api/survivors."""
+
+    frame_width: int | None = None
+    frame_height: int | None = None
+    timestamp: float | None = None
+    detections: list[DetectionResponse] = []
+
+
+class PerceptionStatusResponse(BaseModel):
+    """Snapshot of /perception/status -- health/metadata for the Jetson
+    perception pipeline (camera + detector), not detection data itself."""
+
+    camera_connected: bool | None = None
+    detector_enabled: bool | None = None
+    detector_ready: bool | None = None
+    detector_backend: str | None = None
+    model_name: str | None = None
+    person_count: int | None = None
+    fps: float | None = None
+    frame_width: int | None = None
+    frame_height: int | None = None
+    last_detection_age_s: float | None = None
+
+
+class CameraStatusResponse(BaseModel):
+    """Camera health/metadata plus the MJPEG stream URL the frontend's
+    <video>/<img> element should point at directly -- video bytes
+    themselves never flow through this backend or rosbridge, see
+    docs/DECISIONS.md D-6 and docs/DATA_MODELS.md §7."""
+
+    connected: bool | None = None
+    stream_url: str | None = None
+    frame_width: int | None = None
+    frame_height: int | None = None
+    fps: float | None = None
+
+
 class CommandResponse(BaseModel):
     status: str
     command: str

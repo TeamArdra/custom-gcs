@@ -4,12 +4,15 @@
 // production (served from the same origin via FastAPI's /ui mount).
 
 import type {
+  CameraStatusResponse,
   CommandResponse,
   Command,
   CoverageResponse,
   HealthResponse,
   MapResponse,
   PathResponse,
+  PerceptionDetectionsResponse,
+  PerceptionStatusResponse,
   SimulationCommand,
   SimulationCommandResponse,
   SimulationStatusResponse,
@@ -62,6 +65,20 @@ export function getPath(): Promise<PathResponse> {
 
 export function getSurvivors(): Promise<SurvivorResponse[]> {
   return getJson<SurvivorResponse[]>("/api/survivors");
+}
+
+// Perception (dev-only person-detector) -- deliberately separate from
+// getSurvivors() above, see types.ts's Detection/SurvivorResponse comment.
+export function getPerceptionDetections(): Promise<PerceptionDetectionsResponse> {
+  return getJson<PerceptionDetectionsResponse>("/api/perception/detections");
+}
+
+export function getPerceptionStatus(): Promise<PerceptionStatusResponse> {
+  return getJson<PerceptionStatusResponse>("/api/perception/status");
+}
+
+export function getCameraStatus(): Promise<CameraStatusResponse> {
+  return getJson<CameraStatusResponse>("/api/camera/status");
 }
 
 // Bounded so a hung/slow request (backend or rosbridge stall) can't hold

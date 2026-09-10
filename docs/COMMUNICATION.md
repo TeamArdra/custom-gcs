@@ -118,6 +118,36 @@ One direction, drone → GCS, continuous during flight, **not** via
 leaning MJPEG-over-HTTP first for simplicity and robustness to a lossy
 link, WebRTC if latency proves to be a problem in testing.
 
+**Implemented for the dev pipeline (2026-09-10):** MJPEG-over-HTTP,
+served directly from the Jetson by `perception_node.py`
+(`MJPEGStreamServer`, default `:8090/stream.mjpg`), consumed directly by
+the frontend's `CameraPanel.tsx` `<img>` element — bypassing both
+rosbridge and the FastAPI backend for the actual video bytes, exactly as
+D-6 recommends. The backend's role is limited to relaying the small JSON
+`GET /api/camera/status` (stream URL + connection/resolution/fps) sourced
+from `/perception/status` over the normal rosbridge/telemetry channel —
+see §2.5 below and `DATA_MODELS.md` §5A.
+
+### 2.5 Perception (Development) — new read-only surface
+
+Added alongside the perception pipeline (`DATA_MODELS.md` §5A), **not**
+part of the "no other message type" rule in §2.2 above since it adds no
+new *operator-facing command* — it's read-only, display-only, exactly
+like `/map`/`/coverage_grid`. Two new Control/Telemetry-channel topics
+(`/perception/detections`, `/perception/status`, both `std_msgs/String`
+JSON, drone → GCS), and three new **GET-only** FastAPI routes:
+
+| Route | Sourced from | Purpose |
+|---|---|---|
+| `GET /api/perception/detections` | `/perception/detections` | Raw, unconfirmed, image-space person detections (dev pretrained model) |
+| `GET /api/perception/status` | `/perception/status` | Camera/detector health, person count, fps |
+| `GET /api/camera/status` | `/perception/status` + `Settings.camera_stream_port` | Camera connection + the MJPEG `stream_url` (§2.3) |
+
+None of these are new operator actions and none mutate anything — the
+command surface stays exactly `/api/command/start`/`/api/command/abort`.
+Deliberately **not** the same as `/vision/survivors`/`/api/survivors`
+(§2.2) — see `DATA_MODELS.md` §5A for why the two must stay distinct.
+
 ### 2.4 Transport / Protocol
 
 **Decided (working default), see DECISIONS.md D-0/D-1/D-2:** `mavros`/

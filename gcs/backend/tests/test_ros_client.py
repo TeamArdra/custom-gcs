@@ -16,11 +16,16 @@ repo's pure-logic-test pattern (see onboard-autonomy/test_state_machine.py).
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.ros_client import (
+    PERCEPTION_DETECTIONS_TOPIC,
+    PERCEPTION_STATUS_TOPIC,
     STATUSTEXT_TOPIC,
     SURVIVORS_TOPIC,
+    TELEMETRY_STATE_TOPIC,
     VALID_COMMANDS,
     RosBridgeClient,
 )
@@ -132,6 +137,72 @@ class TestSurvivorCaching:
         ids = [s["survivor_id"] for s in client.survivors()]
 
         assert ids == [1, 2, 3]
+
+
+class TestJsonStringTopicConversion:
+    """RosBridgeClient._make_handler special-cases std_msgs/String topics
+    that carry a JSON-encoded contract (see app/ros_client.py's handler
+    docstring) -- caching the *parsed dict*, not the raw {"data": "..."}
+    String wrapper, and never letting a malformed payload crash the
+    roslibpy callback thread. This is the actual conversion the perception
+    endpoints' response shape depends on (app/main.py just does
+    ros_client.latest(topic) and expects a dict, not a String wrapper) --
+    FakeRosBridgeClient in tests/fakes.py bypasses this logic entirely
+    (its set_perception_detections()/set_perception_status() set the
+    parsed dict directly), so this is the only place it's exercised."""
+
+    def test_perception_detections_message_is_parsed_from_the_json_string_payload(self):
+        client = make_client()
+        payload = {
+            "schema_version": 1,
+            "frame_width": 640,
+            "frame_height": 480,
+            "timestamp": 1.0,
+            "detections": [],
+        }
+        feed(client, PERCEPTION_DETECTIONS_TOPIC, {"data": json.dumps(payload)})
+
+        assert client.latest(PERCEPTION_DETECTIONS_TOPIC) == payload
+
+    def test_perception_status_message_is_parsed_from_the_json_string_payload(self):
+        client = make_client()
+        payload = {"camera_connected": True, "person_count": 3, "detector_backend": "mock"}
+        feed(client, PERCEPTION_STATUS_TOPIC, {"data": json.dumps(payload)})
+
+        assert client.latest(PERCEPTION_STATUS_TOPIC) == payload
+
+    def test_telemetry_state_message_is_parsed_from_the_json_string_payload(self):
+        client = make_client()
+        payload = {"autonomy": {"state": "searching"}, "mapping": {"available": True}}
+        feed(client, TELEMETRY_STATE_TOPIC, {"data": json.dumps(payload)})
+
+        assert client.latest(TELEMETRY_STATE_TOPIC) == payload
+
+    def test_malformed_json_on_perception_detections_is_dropped_not_cached(self):
+        client = make_client()
+        feed(client, PERCEPTION_DETECTIONS_TOPIC, {"data": "{not valid json"})
+
+        assert client.latest(PERCEPTION_DETECTIONS_TOPIC) is None
+
+    def test_malformed_json_does_not_clobber_a_previously_cached_good_value(self):
+        client = make_client()
+        good = {"frame_width": 640, "frame_height": 480, "timestamp": 1.0, "detections": []}
+        feed(client, PERCEPTION_DETECTIONS_TOPIC, {"data": json.dumps(good)})
+        feed(client, PERCEPTION_DETECTIONS_TOPIC, {"data": "{not valid json"})
+
+        assert client.latest(PERCEPTION_DETECTIONS_TOPIC) == good
+
+    def test_missing_data_key_on_perception_status_is_dropped_not_crashed(self):
+        client = make_client()
+        feed(client, PERCEPTION_STATUS_TOPIC, {"unexpected_shape": True})  # KeyError guarded
+
+        assert client.latest(PERCEPTION_STATUS_TOPIC) is None
+
+    def test_non_string_data_field_on_perception_status_is_dropped_not_crashed(self):
+        client = make_client()
+        feed(client, PERCEPTION_STATUS_TOPIC, {"data": 12345})  # TypeError guarded (json.loads(int))
+
+        assert client.latest(PERCEPTION_STATUS_TOPIC) is None
 
 
 class TestStatusTextHistory:
