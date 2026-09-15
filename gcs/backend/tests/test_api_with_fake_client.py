@@ -154,6 +154,29 @@ def test_planned_path_before_any_data_received():
     assert body == {"points": []}
 
 
+def test_frontiers_flattens_marker_array_to_points():
+    client, fake = make_client()
+    fake.set_latest(
+        "/frontiers",
+        {
+            "markers": [
+                {"pose": {"position": {"x": 1.0, "y": 2.0, "z": 0.5}}},
+                {"pose": {"position": {"x": 3.0, "y": 4.0, "z": 0.5}}},
+            ]
+        },
+    )
+
+    body = client.get("/api/frontiers").json()
+
+    assert body["points"] == [{"x": 1.0, "y": 2.0}, {"x": 3.0, "y": 4.0}]
+
+
+def test_frontiers_before_any_data_received():
+    client, _ = make_client()
+    body = client.get("/api/frontiers").json()
+    assert body == {"points": []}
+
+
 def test_telemetry_reflects_mapping_autonomy_navigation_from_telemetry_state():
     """/telemetry/state is a normalized JSON contract from onboard-autonomy
     (see CHECKPOINT/docs/gcs_telemetry_contract.md); RosBridgeClient caches
@@ -585,6 +608,347 @@ def test_no_route_exists_beyond_the_documented_command_surface():
     for path in forbidden_paths:
         assert client.post(path).status_code == 404
         assert client.put(path).status_code == 404
+
+
+def test_list_missions_returns_both_missions_with_correct_shape():
+    client, _ = make_client()
+    body = client.get("/api/missions").json()
+
+    assert len(body) == 2
+    ids = {m["id"] for m in body}
+    assert ids == {"main_nidar", "flight_test"}
+    main_nidar = next(m for m in body if m["id"] == "main_nidar")
+    assert main_nidar["ui_panel"] == "nidar"
+    assert len(main_nidar["scenarios"]) == 1
+    flight_test = next(m for m in body if m["id"] == "flight_test")
+    assert flight_test["ui_panel"] == "flight_test"
+    assert len(flight_test["scenarios"]) == 9
+
+
+def test_get_mission_detail_for_known_missions():
+    client, _ = make_client()
+
+    main_nidar = client.get("/api/missions/main_nidar")
+    assert main_nidar.status_code == 200
+    assert main_nidar.json()["id"] == "main_nidar"
+
+    flight_test = client.get("/api/missions/flight_test")
+    assert flight_test.status_code == 200
+    assert flight_test.json()["id"] == "flight_test"
+
+
+def test_get_mission_detail_unknown_mission_404s():
+    client, _ = make_client()
+    resp = client.get("/api/missions/bogus")
+    assert resp.status_code == 404
+
+
+def test_get_mission_scenario_list_returns_nine_scenarios_three_implemented():
+    client, _ = make_client()
+    body = client.get("/api/missions/flight_test/scenarios").json()
+
+    assert len(body) == 9
+    implemented = [s for s in body if s["implemented"] is True]
+    assert {s["id"] for s in implemented} == {"hover", "forward_backward_hover", "sideways_hover_sideways_hover"}
+
+
+def test_get_mission_scenario_list_includes_steps():
+    client, _ = make_client()
+    body = client.get("/api/missions/flight_test/scenarios").json()
+
+    by_id = {s["id"]: s for s in body}
+    assert by_id["forward_backward_hover"]["steps"] == ["forward", "backward", "hover"]
+    assert by_id["sideways_hover_sideways_hover"]["steps"] == ["sideways", "hover", "sideways", "hover"]
+    assert by_id["hover"]["steps"] == ["takeoff", "hover", "land"]
+    assert by_id["forward"]["steps"] == []
+
+
+def test_flight_test_status_before_any_data_arrives():
+    client, _ = make_client()
+    body = client.get("/api/flight-test/status").json()
+    assert body == {
+        "scenario": None,
+        "state": None,
+        "target_altitude_m": None,
+        "current_altitude_m": None,
+        "current_position": None,
+        "duration_s": None,
+        "elapsed_hover_s": None,
+        "armed": None,
+        "execution_mode": None,
+    }
+
+
+def test_flight_test_status_reflects_seeded_data():
+    client, fake = make_client()
+    fake.set_flight_test_status(
+        {
+            "schema_version": 1,
+            "scenario": "hover",
+            "state": "hovering",
+            "target_altitude_m": 1.0,
+            "current_altitude_m": 0.98,
+            "current_position": [0.0, 0.0, 0.98],
+            "duration_s": 10.0,
+            "elapsed_hover_s": 3.2,
+            "armed": True,
+            "execution_mode": "mock",
+            "timestamp": 1234567890.1,
+        }
+    )
+
+    body = client.get("/api/flight-test/status").json()
+
+    assert body["scenario"] == "hover"
+    assert body["state"] == "hovering"
+    assert body["target_altitude_m"] == 1.0
+    assert body["current_altitude_m"] == 0.98
+    assert body["current_position"] == [0.0, 0.0, 0.98]
+    assert body["duration_s"] == 10.0
+    assert body["elapsed_hover_s"] == 3.2
+    assert body["armed"] is True
+    assert body["execution_mode"] == "mock"
+
+
+def test_flight_test_status_malformed_upstream_field_type_degrades_to_defaults():
+    fake = FakeRosBridgeClient()
+    fake.set_flight_test_status({"state": "hovering", "target_altitude_m": "not-a-number"})
+    app = create_app(client=fake)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.get("/api/flight-test/status")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "scenario": None,
+        "state": None,
+        "target_altitude_m": None,
+        "current_altitude_m": None,
+        "current_position": None,
+        "duration_s": None,
+        "elapsed_hover_s": None,
+        "armed": None,
+        "execution_mode": None,
+    }
+
+
+def test_multi_step_flight_test_status_before_any_data_arrives():
+    client, _ = make_client()
+    body = client.get("/api/flight-test/multi-step/status").json()
+    assert body == {
+        "scenario_id": None,
+        "state": None,
+        "phase": None,
+        "current_step_index": None,
+        "current_step_action": None,
+        "total_steps": None,
+        "current_position": None,
+        "armed": None,
+        "execution_mode": None,
+    }
+
+
+def test_multi_step_flight_test_status_reflects_seeded_data():
+    client, fake = make_client()
+    fake.set_multi_step_flight_test_status(
+        {
+            "schema_version": 1,
+            "mission_id": "flight_test",
+            "scenario_id": "forward_backward_hover",
+            "state": "executing",
+            "phase": "step",
+            "current_step_index": 0,
+            "current_step_action": "forward",
+            "total_steps": 3,
+            "current_position": [1.0, 0.0, 1.0],
+            "armed": True,
+            "execution_mode": "mock",
+            "timestamp": 1234567890.1,
+        }
+    )
+
+    body = client.get("/api/flight-test/multi-step/status").json()
+
+    assert body["scenario_id"] == "forward_backward_hover"
+    assert body["state"] == "executing"
+    assert body["phase"] == "step"
+    assert body["current_step_index"] == 0
+    assert body["current_step_action"] == "forward"
+    assert body["total_steps"] == 3
+    assert body["current_position"] == [1.0, 0.0, 1.0]
+    assert body["armed"] is True
+    assert body["execution_mode"] == "mock"
+
+
+def test_multi_step_flight_test_status_can_report_failed_distinct_from_aborted():
+    client, fake = make_client()
+    fake.set_multi_step_flight_test_status({"state": "failed", "scenario_id": "forward_backward_hover"})
+    body = client.get("/api/flight-test/multi-step/status").json()
+    assert body["state"] == "failed"
+
+
+def test_multi_step_flight_test_status_malformed_upstream_field_type_degrades_to_defaults():
+    fake = FakeRosBridgeClient()
+    fake.set_multi_step_flight_test_status({"state": "executing", "total_steps": "three"})
+    app = create_app(client=fake)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.get("/api/flight-test/multi-step/status")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "scenario_id": None,
+        "state": None,
+        "phase": None,
+        "current_step_index": None,
+        "current_step_action": None,
+        "total_steps": None,
+        "current_position": None,
+        "armed": None,
+        "execution_mode": None,
+    }
+
+
+def test_mission_start_publishes_mission_select_then_start_in_order():
+    client, fake = make_client()
+    resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "hover"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "sent", "mission": "flight_test", "scenario": "hover"}
+    assert fake.published_mission_selects == [("flight_test", "hover")]
+    assert fake.published_commands == ["start"]
+
+
+def test_mission_start_works_for_both_new_multi_step_scenarios():
+    for scenario_id in ("forward_backward_hover", "sideways_hover_sideways_hover"):
+        client, fake = make_client()
+        resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": scenario_id})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "sent", "mission": "flight_test", "scenario": scenario_id}
+        assert fake.published_mission_selects == [("flight_test", scenario_id)]
+        assert fake.published_commands == ["start"]
+
+
+def test_mission_start_unknown_mission_404s_and_publishes_nothing():
+    client, fake = make_client()
+    resp = client.post("/api/mission/start", json={"mission": "bogus", "scenario": "hover"})
+
+    assert resp.status_code == 404
+    assert fake.published_mission_selects == []
+    assert fake.published_commands == []
+
+
+def test_mission_start_unknown_scenario_400s_and_publishes_nothing():
+    client, fake = make_client()
+    resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "bogus"})
+
+    assert resp.status_code == 400
+    assert fake.published_mission_selects == []
+    assert fake.published_commands == []
+
+
+def test_mission_start_not_implemented_scenario_400s_and_publishes_nothing():
+    client, fake = make_client()
+    resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "forward"})
+
+    assert resp.status_code == 400
+    assert fake.published_mission_selects == []
+    assert fake.published_commands == []
+
+
+def test_mission_start_rejected_when_real_mission_already_active():
+    client, fake = make_client()
+    fake.set_latest("/mission/state", {"data": "entering"})
+
+    for mission, scenario in (("main_nidar", "full_mission"), ("flight_test", "hover")):
+        resp = client.post("/api/mission/start", json={"mission": mission, "scenario": scenario})
+        assert resp.status_code == 409
+
+    assert fake.published_mission_selects == []
+    assert fake.published_commands == []
+
+
+def test_mission_start_rejected_when_flight_test_already_active():
+    client, fake = make_client()
+    fake.set_flight_test_status({"state": "hovering"})
+
+    resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "hover"})
+
+    assert resp.status_code == 409
+    assert fake.published_mission_selects == []
+    assert fake.published_commands == []
+
+
+def test_mission_start_rejected_when_multi_step_scenario_already_active():
+    """Extends the 409 already-active guard to the second, separate
+    status topic (MULTI_STEP_TEST_STATUS_TOPIC) -- starting hover while a
+    multi-step scenario is mid-flight must be rejected too, even though
+    they're technically different ROS nodes/topics. See
+    app/ros_client.py's MULTI_STEP_TEST_STATUS_TOPIC docstring."""
+    client, fake = make_client()
+    fake.set_multi_step_flight_test_status({"state": "executing"})
+
+    resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "hover"})
+
+    assert resp.status_code == 409
+    assert fake.published_mission_selects == []
+    assert fake.published_commands == []
+
+
+def test_mission_start_allowed_when_multi_step_scenario_is_failed_or_aborted_or_complete():
+    for terminal_state in ("failed", "aborted", "complete", "idle", None):
+        client, fake = make_client()
+        if terminal_state is not None:
+            fake.set_multi_step_flight_test_status({"state": terminal_state})
+
+        resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "hover"})
+
+        assert resp.status_code == 200, f"expected start to succeed after multi-step state={terminal_state!r}"
+
+
+def test_command_start_and_abort_behave_completely_unchanged():
+    """Reuses the existing command/start/abort behavior verbatim -- the
+    fact these still pass unmodified alongside the new mission-aware
+    surface IS the proof /api/command/start and /api/command/abort were
+    not touched."""
+    client, fake = make_client()
+
+    resp = client.post("/api/command/start")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "sent", "command": "start"}
+    assert fake.published_commands == ["start"]
+
+    resp = client.post("/api/command/abort")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "sent", "command": "abort"}
+    assert fake.published_commands == ["start", "abort"]
+
+
+def test_new_mission_get_routes_never_publish_anything():
+    client, fake = make_client()
+    for _ in range(3):
+        client.get("/api/missions")
+        client.get("/api/missions/main_nidar")
+        client.get("/api/missions/flight_test/scenarios")
+        client.get("/api/flight-test/status")
+        client.get("/api/flight-test/multi-step/status")
+    assert fake.published_commands == []
+    assert fake.published_mission_selects == []
+
+
+def test_main_source_contains_no_forbidden_command_surface_words():
+    """Grep-style guard: no new route path or function name in main.py's
+    source introduces a throttle/motor/joystick/manual control surface,
+    mirroring test_no_route_exists_beyond_the_documented_command_surface's
+    structural guarantee at the source-text level."""
+    import inspect
+
+    from app import main as main_module
+
+    source = inspect.getsource(main_module)
+    for forbidden in ("throttle", "motor", "joystick", "manual"):
+        assert forbidden not in source.lower()
 
 
 def test_new_perception_and_camera_routes_are_get_only():

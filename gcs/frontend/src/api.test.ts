@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getCameraStatus, getPerceptionDetections, getPerceptionStatus, getTelemetry, postCommand } from "./api";
+import {
+  getCameraStatus,
+  getFlightTestStatus,
+  getMissions,
+  getMultiStepFlightTestStatus,
+  getPerceptionDetections,
+  getPerceptionStatus,
+  getTelemetry,
+  postCommand,
+  postMissionStart,
+} from "./api";
 
 // Direct replacement for the old prototype's raw-HTML string-matching
 // test -- verifies api.ts calls exactly the documented root-relative
@@ -77,6 +87,44 @@ describe("api.ts", () => {
     await getCameraStatus();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith("/api/camera/status");
+  });
+
+  it("getMissions calls exactly /api/missions", async () => {
+    const fetchMock = mockFetchOnce([]);
+    await getMissions();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/missions");
+  });
+
+  it("getFlightTestStatus calls exactly /api/flight-test/status", async () => {
+    const fetchMock = mockFetchOnce({
+      scenario: null, state: null, target_altitude_m: null, current_altitude_m: null,
+      current_position: null, duration_s: null, elapsed_hover_s: null, armed: null, execution_mode: null,
+    });
+    await getFlightTestStatus();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/flight-test/status");
+  });
+
+  it("getMultiStepFlightTestStatus calls exactly /api/flight-test/multi-step/status", async () => {
+    const fetchMock = mockFetchOnce({
+      scenario_id: null, state: null, phase: null, current_step_index: null, current_step_action: null,
+      total_steps: null, current_position: null, armed: null, execution_mode: null,
+    });
+    await getMultiStepFlightTestStatus();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/flight-test/multi-step/status");
+  });
+
+  it("postMissionStart posts a JSON body with the mission/scenario ids to /api/mission/start", async () => {
+    const fetchMock = mockFetchOnce({ status: "sent", mission: "flight_test", scenario: "hover" });
+    await postMissionStart("flight_test", "hover");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/mission/start");
+    expect(init).toMatchObject({ method: "POST" });
+    expect(JSON.parse(init.body as string)).toEqual({ mission: "flight_test", scenario: "hover" });
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("no call ever uses an absolute URL with a host", async () => {

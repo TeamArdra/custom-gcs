@@ -282,6 +282,71 @@ by the drone-side topic table and needs a subscriber node on the Jetson
 side plus a latency test under realistic (video-present) link load before
 it can be considered done.
 
+## 8A. Mission/Test Selection (Development) — `/gcs/mission_select`, `/flight_test/status`, `/flight_test/multi_step/status`
+
+**Added 2026-09-15, Mission/Test Selection and Execution System.**
+Routing metadata for *which* mission profile a subsequent `/gcs/command`
+`"start"` applies to — **not a third operator command**, see
+[COMMUNICATION.md](COMMUNICATION.md) §2.6 for why this doesn't widen §8's
+"exactly two values" rule. Consulted only at the moment `"start"` is
+validated; publishing this topic alone never causes anything to happen.
+
+```jsonc
+// /gcs/mission_select -- std_msgs/String, JSON-encoded
+{
+  "schema_version": 1,
+  "mission_id": "flight_test",       // "main_nidar" | "flight_test"
+  "scenario_id": "forward_backward_hover",
+  "timestamp": 1234567890.1
+}
+```
+
+`mission_id="main_nidar"` (or no selection ever received) routes to the
+existing, unchanged Main NIDAR Competition mission
+(`mission_state_node.py`) — behavior is byte-for-byte identical to before
+this addition. `mission_id="flight_test"` routes to one of the mock-only
+scenarios in `nidar_autonomy/flight_test/`, currently:
+
+| `scenario_id` | Node | Steps |
+|---|---|---|
+| `hover` | `hover_test_node.py` | Arm → takeoff to 1.0 m → hold 10 s → land → disarm |
+| `forward_backward_hover` ("Test 1") | `multi_step_test_node.py` | Arm → takeoff → forward → backward → hover (3 s) → land → disarm |
+| `sideways_hover_sideways_hover` ("Test 2") | `multi_step_test_node.py` | Arm → takeoff → sideways → hover → sideways → hover → land → disarm |
+
+Adding a future scenario is a registry addition to
+`nidar_autonomy/flight_test/scenarios.py` (an ordered list of named
+steps) plus the matching entry in `custom-gcs/gcs/backend/app/missions.py`
+(hand-synced across the two repos, same convention as `topics.py` vs.
+this document generally — no shared codegen) — not a new node, unless the
+new scenario needs an action `multi_step_test_node.py` doesn't already
+know how to execute.
+
+```jsonc
+// /flight_test/status or /flight_test/multi_step/status -- std_msgs/String, JSON-encoded
+// (shape shown is the multi-step topic; /flight_test/status is the same
+// convention with hover-specific fields instead of current_step_*)
+{
+  "schema_version": 1,
+  "mission_id": "flight_test",
+  "scenario_id": "forward_backward_hover",
+  "state": "executing",   // idle|arming|executing|landing|complete|aborted|failed
+  "phase": "step",
+  "current_step_index": 0,
+  "current_step_action": "forward",
+  "total_steps": 3,
+  "current_position": [1.0, 0.0, 1.0],
+  "armed": true,
+  "execution_mode": "mock",   // always "mock" -- an honest, permanent fact, not a placeholder
+  "timestamp": 1234567890.1
+}
+```
+
+`state: "failed"` is distinct from `"aborted"`: `"failed"` means the
+scenario's own execution went wrong (e.g. an unrecognized action);
+`"aborted"` means the operator sent `/gcs/command: "abort"`. Collapsing
+the two would make a real execution bug indistinguishable from an
+operator action after the fact.
+
 ## 9. What Deliberately Does Not Exist
 
 No schema is defined — anywhere, even as an unused/future placeholder —

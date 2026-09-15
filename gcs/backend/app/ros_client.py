@@ -27,6 +27,25 @@ SURVIVORS_TOPIC = "/vision/survivors"
 HEARTBEAT_TOPIC = "/gcs/heartbeat"
 COMMAND_TOPIC = "/gcs/command"
 
+# Multi-mission framework -- routing metadata for which mission-specific
+# node should act on the /gcs/command "start" that follows, plus the
+# status readbacks for the implemented Flight Test scenarios. Both
+# status topics are entirely separate from COMMAND_TOPIC:
+# MISSION_SELECT_TOPIC is never a command by itself (publish_command()
+# is still the only thing that can trigger start/abort), and the two
+# status topics are read-only subscriptions like TELEMETRY_STATE_TOPIC.
+# FLIGHT_TEST_STATUS_TOPIC (hover_test_node) and
+# MULTI_STEP_TEST_STATUS_TOPIC (multi_step_test_node) are deliberately
+# SEPARATE topics, not one shared status topic -- both nodes publish
+# unconditionally every second regardless of which one is actually
+# active, so sharing one topic would let the idle node's noise overwrite
+# the active node's status in this client's single-latest-message cache.
+# See app/missions.py and onboard-autonomy's hover_test_node/
+# multi_step_test_node.
+MISSION_SELECT_TOPIC = "/gcs/mission_select"
+FLIGHT_TEST_STATUS_TOPIC = "/flight_test/status"
+MULTI_STEP_TEST_STATUS_TOPIC = "/flight_test/multi_step/status"
+
 # Mapping/exploration/telemetry topics -- adopted from onboard-autonomy's
 # NIDAR Autonomy Migration (folding gps_denied/raj-dev's mapping stack in;
 # see CHECKPOINT/CURRENT_STATE.md). `/map` supersedes the never-implemented
@@ -36,6 +55,7 @@ COMMAND_TOPIC = "/gcs/command"
 MAP_TOPIC = "/map"
 COVERAGE_GRID_TOPIC = "/coverage_grid"
 PLANNED_PATH_TOPIC = "/planned_path"
+FRONTIERS_TOPIC = "/frontiers"
 TELEMETRY_STATE_TOPIC = "/telemetry/state"
 
 # Perception pipeline (Jetson-side, development-only pretrained
@@ -98,9 +118,12 @@ _SUBSCRIBED_TOPIC_TYPES = {
     IMU_TOPIC: "sensor_msgs/Imu",
     COVERAGE_GRID_TOPIC: "nav_msgs/OccupancyGrid",
     PLANNED_PATH_TOPIC: "nav_msgs/Path",
+    FRONTIERS_TOPIC: "visualization_msgs/MarkerArray",
     TELEMETRY_STATE_TOPIC: "std_msgs/String",
     PERCEPTION_DETECTIONS_TOPIC: "std_msgs/String",
     PERCEPTION_STATUS_TOPIC: "std_msgs/String",
+    FLIGHT_TEST_STATUS_TOPIC: "std_msgs/String",
+    MULTI_STEP_TEST_STATUS_TOPIC: "std_msgs/String",
     SIMULATION_MISSION_STATE_TOPIC: "std_msgs/String",
     SIMULATION_STATUS_TOPIC: "std_msgs/String",
     SIMULATION_MAP_TOPIC: "nav_msgs/OccupancyGrid",
@@ -131,6 +154,7 @@ class RosBridgeClient:
         self._subscriptions: list[roslibpy.Topic] = []
         self._command_topic: roslibpy.Topic | None = None
         self._simulation_command_topic: roslibpy.Topic | None = None
+        self._mission_select_topic: roslibpy.Topic | None = None
 
     def connect(self) -> None:
         self._ros.run(timeout=self._connect_timeout_s)
@@ -144,6 +168,10 @@ class RosBridgeClient:
             self._ros, SIMULATION_COMMAND_TOPIC, _COMMAND_TOPIC_TYPE
         )
         self._simulation_command_topic.advertise()
+        self._mission_select_topic = roslibpy.Topic(
+            self._ros, MISSION_SELECT_TOPIC, _COMMAND_TOPIC_TYPE
+        )
+        self._mission_select_topic.advertise()
 
     def disconnect(self) -> None:
         for sub in self._subscriptions:
@@ -155,6 +183,9 @@ class RosBridgeClient:
         if self._simulation_command_topic is not None:
             self._simulation_command_topic.unadvertise()
             self._simulation_command_topic = None
+        if self._mission_select_topic is not None:
+            self._mission_select_topic.unadvertise()
+            self._mission_select_topic = None
         self._ros.terminate()
 
     def _make_handler(self, topic: str):
@@ -172,6 +203,8 @@ class RosBridgeClient:
                     SIMULATION_TELEMETRY_STATE_TOPIC,
                     PERCEPTION_DETECTIONS_TOPIC,
                     PERCEPTION_STATUS_TOPIC,
+                    FLIGHT_TEST_STATUS_TOPIC,
+                    MULTI_STEP_TEST_STATUS_TOPIC,
                 ):
                     # std_msgs/String carrying a JSON-encoded normalized
                     # telemetry contract (see
@@ -240,3 +273,21 @@ class RosBridgeClient:
         if self._simulation_command_topic is None:
             raise RuntimeError("not connected to rosbridge")
         self._simulation_command_topic.publish(roslibpy.Message({"data": command}))
+
+    def publish_mission_select(self, mission_id: str, scenario_id: str) -> None:
+        """Routing metadata for which mission-specific node should act on
+        the /gcs/command 'start' that follows -- NOT a command itself, and
+        NOT validated against the mission registry here (that's main.py's
+        job, before this is ever called)."""
+        if not mission_id or not scenario_id:
+            raise ValueError("mission_id and scenario_id must be non-empty")
+        if self._mission_select_topic is None:
+            raise RuntimeError("not connected to rosbridge")
+        self._mission_select_topic.publish(roslibpy.Message({
+            "data": json.dumps({
+                "schema_version": 1,
+                "mission_id": mission_id,
+                "scenario_id": scenario_id,
+                "timestamp": time.time(),
+            })
+        }))

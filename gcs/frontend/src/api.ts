@@ -8,8 +8,13 @@ import type {
   CommandResponse,
   Command,
   CoverageResponse,
+  FlightTestStatusResponse,
+  FrontiersResponse,
   HealthResponse,
   MapResponse,
+  Mission,
+  MissionStartResponse,
+  MultiStepFlightTestStatusResponse,
   PathResponse,
   PerceptionDetectionsResponse,
   PerceptionStatusResponse,
@@ -63,6 +68,10 @@ export function getPath(): Promise<PathResponse> {
   return getJson<PathResponse>("/api/path");
 }
 
+export function getFrontiers(): Promise<FrontiersResponse> {
+  return getJson<FrontiersResponse>("/api/frontiers");
+}
+
 export function getSurvivors(): Promise<SurvivorResponse[]> {
   return getJson<SurvivorResponse[]>("/api/survivors");
 }
@@ -79,6 +88,30 @@ export function getPerceptionStatus(): Promise<PerceptionStatusResponse> {
 
 export function getCameraStatus(): Promise<CameraStatusResponse> {
   return getJson<CameraStatusResponse>("/api/camera/status");
+}
+
+// -- Multi-mission framework -- gated entirely behind
+// MissionSelectPanel.tsx (VITE_ENABLE_MISSION_SELECT), see App.tsx and
+// custom-gcs/CLAUDE.md Important Constraint #1. These calls are metadata/
+// selection only, mirroring gcs/backend/app/missions.py's registry --
+// postMissionStart() below still only ever results in the same "start"
+// postCommand("start") already sends, parameterized with which mission
+// profile it applies to.
+
+export function getMissions(): Promise<Mission[]> {
+  return getJson<Mission[]>("/api/missions");
+}
+
+export function getMissionDetail(missionId: string): Promise<Mission> {
+  return getJson<Mission>(`/api/missions/${missionId}`);
+}
+
+export function getFlightTestStatus(): Promise<FlightTestStatusResponse> {
+  return getJson<FlightTestStatusResponse>("/api/flight-test/status");
+}
+
+export function getMultiStepFlightTestStatus(): Promise<MultiStepFlightTestStatusResponse> {
+  return getJson<MultiStepFlightTestStatusResponse>("/api/flight-test/multi-step/status");
 }
 
 // Bounded so a hung/slow request (backend or rosbridge stall) can't hold
@@ -118,6 +151,42 @@ async function postAction<T>(path: string, timeoutMs: number): Promise<T> {
 export function postCommand(cmd: Command): Promise<CommandResponse> {
   const timeoutMs = cmd === "abort" ? ABORT_TIMEOUT_MS : COMMAND_TIMEOUT_MS;
   return postAction<CommandResponse>(`/api/command/${cmd}`, timeoutMs);
+}
+
+// Same bounded-timeout/error-detail behavior as postAction() above, but
+// for the one POST route in this file that needs a JSON body
+// (/api/mission/start's {mission, scenario} -- see
+// gcs/backend/app/schemas.py's MissionStartRequest). Ordinary
+// COMMAND_TIMEOUT_MS bound, not ABORT_TIMEOUT_MS -- mission-start is not
+// the safety-critical abort path.
+async function postJson<T>(path: string, body: unknown, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error(`POST ${path} timed out after ${timeoutMs}ms`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) {
+    const detail = await extractErrorDetail(res);
+    throw new Error(`POST ${path} failed: HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
+  }
+  return (await res.json()) as T;
+}
+
+export function postMissionStart(mission: string, scenario: string): Promise<MissionStartResponse> {
+  return postJson<MissionStartResponse>("/api/mission/start", { mission, scenario }, COMMAND_TIMEOUT_MS);
 }
 
 // Simulation control -- see api.ts's module comment and

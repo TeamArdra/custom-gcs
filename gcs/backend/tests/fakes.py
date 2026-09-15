@@ -7,6 +7,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.ros_client import (
+    FLIGHT_TEST_STATUS_TOPIC,
+    MULTI_STEP_TEST_STATUS_TOPIC,
     PERCEPTION_DETECTIONS_TOPIC,
     PERCEPTION_STATUS_TOPIC,
     VALID_COMMANDS,
@@ -23,8 +25,10 @@ class FakeRosBridgeClient:
         self._statustext: list[dict] = []
         self.published_commands: list[str] = []
         self.published_simulation_commands: list[str] = []
+        self.published_mission_selects: list[tuple[str, str]] = []
         self._publish_exception: Exception | None = None
         self._publish_simulation_exception: Exception | None = None
+        self._publish_mission_select_exception: Exception | None = None
 
     def set_latest(self, topic: str, message: dict) -> None:
         self._latest[topic] = message
@@ -37,6 +41,12 @@ class FakeRosBridgeClient:
 
     def set_perception_status(self, data: dict) -> None:
         self._latest[PERCEPTION_STATUS_TOPIC] = data
+
+    def set_flight_test_status(self, data: dict) -> None:
+        self._latest[FLIGHT_TEST_STATUS_TOPIC] = data
+
+    def set_multi_step_flight_test_status(self, data: dict) -> None:
+        self._latest[MULTI_STEP_TEST_STATUS_TOPIC] = data
 
     def set_age_s(self, topic: str, age_s: float | None) -> None:
         self._ages[topic] = age_s
@@ -86,3 +96,17 @@ class FakeRosBridgeClient:
         if self._publish_simulation_exception is not None:
             raise self._publish_simulation_exception
         self.published_simulation_commands.append(command)
+
+    def fail_publish_mission_select_with(self, exc: Exception) -> None:
+        self._publish_mission_select_exception = exc
+
+    def publish_mission_select(self, mission_id: str, scenario_id: str) -> None:
+        """The fake's mirror of the real client's
+        publish_mission_select() -- routing metadata, deliberately
+        tracked separately from published_commands above so tests can
+        assert the exact publish order (mission_select before start)."""
+        if not mission_id or not scenario_id:
+            raise ValueError("mission_id and scenario_id must be non-empty")
+        if self._publish_mission_select_exception is not None:
+            raise self._publish_mission_select_exception
+        self.published_mission_selects.append((mission_id, scenario_id))

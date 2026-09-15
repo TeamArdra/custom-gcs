@@ -148,6 +148,53 @@ command surface stays exactly `/api/command/start`/`/api/command/abort`.
 Deliberately **not** the same as `/vision/survivors`/`/api/survivors`
 (§2.2) — see `DATA_MODELS.md` §5A for why the two must stay distinct.
 
+### 2.6 Mission/Test Selection (Development/Bench-Test) — new surface
+
+Added alongside the Mission/Test Selection and Execution System
+(2026-09-15): lets the operator pick *which* mission profile a
+subsequent real `"start"` applies to — the canonical Main NIDAR
+Competition mission, or one of a small set of mock-only Flight Test
+scenarios used for bench validation (see `nidar_autonomy/flight_test/`).
+**This does not add a new operator action beyond start/abort** — same
+reasoning as §2.5: `/gcs/mission_select` only ever carries *routing
+metadata* consulted at the moment a `"start"` on `/gcs/command` arrives,
+never a command by itself, and it can never cause a `"start"`/`"abort"`
+to be acted on. The command surface stays exactly
+`/api/command/start`/`/api/mission/start`/`/api/command/abort` — the
+middle one is still only ever a parameterized `"start"`, not a new kind
+of action (see `gcs/backend/app/main.py`'s module docstring).
+
+One new Control/Telemetry-channel topic, GCS → Drone (`std_msgs/String`
+JSON):
+
+| Topic | Type | Direction | Rate | Purpose |
+|---|---|---|---|---|
+| `/gcs/mission_select` | custom JSON (`std_msgs/String`) | **GCS → Drone** | On selection change | `{"mission_id", "scenario_id", "schema_version", "timestamp"}` — which mission a subsequent "start" is for |
+| `/flight_test/status` | custom JSON (`std_msgs/String`) | Drone → GCS | 1 Hz | Status of the "hover" Flight Test scenario (`nidar_autonomy/flight_test/hover_test_node.py`) |
+| `/flight_test/multi_step/status` | custom JSON (`std_msgs/String`) | Drone → GCS | 1 Hz | Status of the ordered multi-step Flight Test scenarios — Test 1, Test 2, ... (`nidar_autonomy/flight_test/multi_step_test_node.py`). Deliberately a **separate** topic from `/flight_test/status`, not shared — both nodes publish unconditionally every second regardless of which scenario (if any) is active, so sharing one topic would let an idle node's status overwrite the actually-active node's in the GCS's single-latest-message cache. |
+
+Three new FastAPI routes:
+
+| Route | Sourced from | Purpose |
+|---|---|---|
+| `GET /api/missions` | `app/missions.py`'s static registry | List available missions and their scenarios (id, name, description, ordered `steps`, `implemented`) |
+| `POST /api/mission/start` | validates against the registry, then publishes `/gcs/mission_select` immediately followed by the same `"start"` on `/gcs/command` that `/api/command/start` sends | Start a specific mission/scenario — 404 unknown mission, 400 unknown/not-yet-implemented scenario, 409 if a mission is already active |
+| `GET /api/flight-test/status`, `GET /api/flight-test/multi-step/status` | `/flight_test/status`, `/flight_test/multi_step/status` | Read-only scenario progress for the GCS UI |
+
+**Mock-only, by construction, and dev/bench-only in the GCS UI**:
+`nidar_autonomy/flight_test/` never imports `mavros_msgs` and never
+touches a real Pixhawk (see that package's `__init__.py` and each node's
+own docstring) — Flight Test scenarios only ever drive
+`MockFlightController`. The GCS frontend's mission/scenario selector
+(`MissionSelectPanel.tsx`) is gated behind a separate build-time flag
+(`VITE_ENABLE_MISSION_SELECT`), same isolation pattern as the "RUN
+SIMULATION" panel (§5) — never shown in a competition-deployed build,
+per `custom-gcs/CLAUDE.md` Important Constraint #1. The Main NIDAR
+Competition mission (`mission_id="main_nidar"`) remains reachable through
+the plain, always-available `/api/command/start` exactly as before this
+addition — selecting it explicitly via `/api/mission/start` is equivalent
+and additive, not a replacement.
+
 ### 2.4 Transport / Protocol
 
 **Decided (working default), see DECISIONS.md D-0/D-1/D-2:** `mavros`/

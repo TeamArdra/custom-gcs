@@ -168,6 +168,19 @@ class PathResponse(BaseModel):
     points: list[PathPointResponse] = []
 
 
+class FrontierPointResponse(BaseModel):
+    x: float
+    y: float
+
+
+class FrontiersResponse(BaseModel):
+    """Flattened from visualization_msgs/MarkerArray on /frontiers -- the
+    frontend only needs the candidate point list, not the full Marker
+    structure per point."""
+
+    points: list[FrontierPointResponse] = []
+
+
 class SurvivorResponse(BaseModel):
     survivor_id: int
     x: float
@@ -249,6 +262,76 @@ class CameraStatusResponse(BaseModel):
 class CommandResponse(BaseModel):
     status: str
     command: str
+
+
+class ScenarioResponse(BaseModel):
+    id: str
+    name: str
+    description: str
+    implemented: bool
+    execution_config: dict = {}
+    steps: list[str] = []
+
+
+class MissionResponse(BaseModel):
+    id: str
+    name: str
+    description: str
+    ui_panel: str
+    required_nodes: list[str] = []
+    scenarios: list[ScenarioResponse] = []
+
+
+class FlightTestStatusResponse(BaseModel):
+    """Snapshot of /flight_test/status (hover_test_node) -- own,
+    deliberately separate type from PerceptionStatusResponse/
+    SimulationStatusResponse even though structurally similar, this
+    repo's established convention (see SimulationStatusResponse's own
+    docstring). `execution_mode` is always "mock" for now -- a
+    permanent, honest wire-contract fact meaning "this is not real
+    flight," not a placeholder to be replaced later."""
+
+    scenario: str | None = None
+    state: str | None = None
+    target_altitude_m: float | None = None
+    current_altitude_m: float | None = None
+    current_position: list[float] | None = None
+    duration_s: float | None = None
+    elapsed_hover_s: float | None = None
+    armed: bool | None = None
+    execution_mode: str | None = None
+
+
+class MultiStepFlightTestStatusResponse(BaseModel):
+    """Snapshot of /flight_test/multi_step/status (multi_step_test_node)
+    -- a DELIBERATELY SEPARATE type from FlightTestStatusResponse above,
+    same convention as every other status-response pair in this file:
+    hover's state machine only ever reaches "aborted" as a terminal
+    failure state, while the multi-step scenarios have a distinct
+    "failed" state (the scenario's own execution went wrong, e.g. an
+    unrecognized action) that "aborted" (operator hit ABORT) must never
+    be conflated with -- see onboard-autonomy's multi_step_test_node."""
+
+    scenario_id: str | None = None
+    state: str | None = None
+    phase: str | None = None
+    current_step_index: int | None = None
+    current_step_action: str | None = None
+    total_steps: int | None = None
+    current_position: list[float] | None = None
+    armed: bool | None = None
+    execution_mode: str | None = None
+
+
+class MissionStartRequest(BaseModel):
+    mission: str
+    scenario: str
+
+
+class MissionStartResponse(BaseModel):
+    status: str
+    mission: str
+    scenario: str
 
 
 class SimulationCommandResponse(BaseModel):

@@ -5,11 +5,13 @@ import * as api from "../api";
 
 const EMPTY_COVERAGE = { resolution: null, width: null, height: null, data: null };
 const EMPTY_PATH = { points: [] };
+const EMPTY_FRONTIERS = { points: [] };
 
 function mockMapApis(map: Awaited<ReturnType<typeof api.getMap>>) {
   vi.spyOn(api, "getMap").mockResolvedValue(map);
   vi.spyOn(api, "getCoverage").mockResolvedValue(EMPTY_COVERAGE);
   vi.spyOn(api, "getPath").mockResolvedValue(EMPTY_PATH);
+  vi.spyOn(api, "getFrontiers").mockResolvedValue(EMPTY_FRONTIERS);
 }
 
 afterEach(() => {

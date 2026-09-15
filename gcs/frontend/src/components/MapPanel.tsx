@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import Panel from "./Panel";
-import { getCoverage, getMap, getPath } from "../api";
+import { getCoverage, getFrontiers, getMap, getPath } from "../api";
 import { renderOccupancyMapCanvas } from "../mapRender";
-import type { CoverageResponse, MapResponse, PathResponse, TelemetryResponse } from "../types";
+import type {
+  CoverageResponse,
+  FrontiersResponse,
+  MapResponse,
+  PathResponse,
+  TelemetryResponse,
+} from "../types";
 
 const POLL_INTERVAL_MS = 1000;
 
@@ -26,6 +32,7 @@ export default function MapPanel({ telemetry }: { telemetry: TelemetryResponse |
   const [map, setMap] = useState<MapResponse | null>(null);
   const [coverage, setCoverage] = useState<CoverageResponse | null>(null);
   const [path, setPath] = useState<PathResponse | null>(null);
+  const [frontiers, setFrontiers] = useState<FrontiersResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -34,11 +41,12 @@ export default function MapPanel({ telemetry }: { telemetry: TelemetryResponse |
 
     async function poll() {
       try {
-        const [m, c, p] = await Promise.all([getMap(), getCoverage(), getPath()]);
+        const [m, c, p, f] = await Promise.all([getMap(), getCoverage(), getPath(), getFrontiers()]);
         if (mounted) {
           setMap(m);
           setCoverage(c);
           setPath(p);
+          setFrontiers(f);
           setError(null);
         }
       } catch (e) {
@@ -71,8 +79,9 @@ export default function MapPanel({ telemetry }: { telemetry: TelemetryResponse |
       originY: telemetry?.mapping?.origin_y ?? 0,
       dronePosition: telemetry?.pose?.position ?? null,
       target: telemetry?.autonomy?.target ?? telemetry?.navigation?.target ?? null,
+      frontiers: frontiers?.points ?? null,
     });
-  }, [map, coverage, path, telemetry, hasMap]);
+  }, [map, coverage, path, frontiers, telemetry, hasMap]);
 
   return (
     <Panel title="Map" className="col-span-full">

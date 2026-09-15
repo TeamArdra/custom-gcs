@@ -146,6 +146,15 @@ export interface PathResponse {
   points: PathPointResponse[];
 }
 
+export interface FrontierPointResponse {
+  x: number;
+  y: number;
+}
+
+export interface FrontiersResponse {
+  points: FrontierPointResponse[];
+}
+
 export interface SurvivorResponse {
   survivor_id: number;
   x: number;
@@ -217,6 +226,75 @@ export interface CommandResponse {
 // The operator command surface is exactly these two -- see
 // custom-gcs/CLAUDE.md Important Constraints #1. Do not widen this type.
 export type Command = "start" | "abort";
+
+// -- Multi-mission framework -- mirrors gcs/backend/app/missions.py's
+// MissionDefinition/ScenarioDefinition (registry) and
+// gcs/backend/app/schemas.py's FlightTestStatusResponse/
+// MultiStepFlightTestStatusResponse/MissionStartResponse. A "mission" is
+// a top-level choice (Main NIDAR Competition vs. Flight Test); a
+// "scenario" is one runnable case within a mission. This is metadata/
+// selection only -- it does not widen the Command union above;
+// mission-start goes through postMissionStart(), a separate call, same
+// way SimulationCommand stays separate from Command. Gated entirely
+// behind MissionSelectPanel.tsx (VITE_ENABLE_MISSION_SELECT) -- see
+// custom-gcs/CLAUDE.md Important Constraint #1.
+export interface Scenario {
+  id: string;
+  name: string;
+  description: string;
+  implemented: boolean;
+  execution_config: Record<string, number | string>;
+  steps: string[];
+}
+
+export interface Mission {
+  id: string;
+  name: string;
+  description: string;
+  ui_panel: "nidar" | "flight_test" | string;
+  required_nodes: string[];
+  scenarios: Scenario[];
+}
+
+// execution_mode is always "mock" for now -- render it honestly, never
+// imply real flight. Status readback for the single-shot "hover"
+// scenario (hover_test_node) only -- see MultiStepFlightTestStatusResponse
+// below for the two multi-step scenarios' separate status topic/type.
+export interface FlightTestStatusResponse {
+  scenario: string | null;
+  state: "idle" | "arming" | "taking_off" | "hovering" | "landing" | "complete" | "aborted" | null;
+  target_altitude_m: number | null;
+  current_altitude_m: number | null;
+  current_position: [number, number, number] | null;
+  duration_s: number | null;
+  elapsed_hover_s: number | null;
+  armed: boolean | null;
+  execution_mode: string | null;
+}
+
+// Status readback for the two multi-step flight-test scenarios
+// (multi_step_test_node) -- a DELIBERATELY SEPARATE type from
+// FlightTestStatusResponse above, same convention as every other
+// status-response pair in this codebase. Note the distinct "failed"
+// state (the scenario's own execution went wrong) vs. "aborted" (the
+// operator hit ABORT) -- hover's simpler state machine has no "failed".
+export interface MultiStepFlightTestStatusResponse {
+  scenario_id: string | null;
+  state: "idle" | "arming" | "executing" | "landing" | "complete" | "aborted" | "failed" | null;
+  phase: "idle" | "taking_off" | "step" | "landing" | null;
+  current_step_index: number | null;
+  current_step_action: string | null;
+  total_steps: number | null;
+  current_position: [number, number, number] | null;
+  armed: boolean | null;
+  execution_mode: string | null;
+}
+
+export interface MissionStartResponse {
+  status: string;
+  mission: string;
+  scenario: string;
+}
 
 // -- Simulation ("RUN SIMULATION") -- completely separate from the real
 // mission command/telemetry types above. See

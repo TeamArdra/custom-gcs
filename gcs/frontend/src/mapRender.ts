@@ -4,7 +4,7 @@
 // duplicating the drawing logic. Two callers, one renderer -- the
 // simulation is a consumer of the same visualization, not a second
 // implementation of it.
-import type { CoverageResponse, MapResponse, PathResponse } from "./types";
+import type { CoverageResponse, FrontierPointResponse, MapResponse, PathResponse } from "./types";
 
 // Palette matches tailwind.config.js's dark operator-panel colors --
 // canvas fills can't reference Tailwind classes, so the same hex values
@@ -17,6 +17,7 @@ export const COLOR_SEARCHED = "rgba(46, 160, 67, 0.35)"; // ok, translucent
 export const COLOR_PATH = "#388bfd"; // accent
 export const COLOR_DRONE = "#388bfd"; // accent
 export const COLOR_TARGET = "#d29922"; // warn
+export const COLOR_FRONTIER = "#a371f7"; // purple, distinct from path/target/drone
 
 // nav_msgs/OccupancyGrid cell semantics (standard for /map and
 // /simulation/map; /coverage_grid and /simulation/coverage_grid reuse the
@@ -42,6 +43,7 @@ export interface RenderMapOptions {
   path?: PathResponse | null;
   dronePosition?: { x: number; y: number } | null;
   target?: [number, number] | null;
+  frontiers?: FrontierPointResponse[] | null;
   originX?: number;
   originY?: number;
   cellPx?: number;
@@ -52,7 +54,17 @@ export interface RenderMapOptions {
  * are responsible for polling fresh data and calling this again -- this
  * function has no state or timers of its own. */
 export function renderOccupancyMapCanvas(canvas: HTMLCanvasElement, options: RenderMapOptions): void {
-  const { map, coverage, path, dronePosition, target, originX = 0, originY = 0, cellPx = 8 } = options;
+  const {
+    map,
+    coverage,
+    path,
+    dronePosition,
+    target,
+    frontiers,
+    originX = 0,
+    originY = 0,
+    cellPx = 8,
+  } = options;
   if (map.data == null || map.width == null || map.height == null || map.resolution == null) {
     return;
   }
@@ -129,5 +141,16 @@ export function renderOccupancyMapCanvas(canvas: HTMLCanvasElement, options: Ren
     ctx.beginPath();
     ctx.arc(tx, height - ty, 6, 0, Math.PI * 2);
     ctx.stroke();
+  }
+
+  // -- frontier candidates (exploration boundary points, /frontiers) --
+  if (frontiers && frontiers.length > 0) {
+    ctx.fillStyle = COLOR_FRONTIER;
+    for (const f of frontiers) {
+      const [fx, fy] = worldToCanvas(f.x, f.y, originX, originY, map.resolution, cellPx);
+      ctx.beginPath();
+      ctx.arc(fx, height - fy, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }

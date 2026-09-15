@@ -7,10 +7,16 @@ test double with no real networking -- see tests/fakes.py.
 
 The API surface is intentionally small. In particular: there is no route
 that can modify navigation, the map, or survivor tags, and there are
-exactly two mutating routes affecting the REAL mission (POST
-/api/command/start, POST /api/command/abort). That is not a convention
-the frontend is trusted to respect -- it's true because no other route
-touching the real mission/flight-control path exists. See
+exactly three mutating routes affecting the REAL mission (POST
+/api/command/start, POST /api/mission/start, POST /api/command/abort).
+Mission selection (POST /api/mission/start, backed by app/missions.py's
+static registry) only ever parameterizes *which* mission profile a
+subsequent real "start" applies to -- Main NIDAR Competition or Flight
+Test -- it does not add a new kind of operator action beyond start/abort;
+it still, ultimately, only ever publishes a "start" (plus routing
+metadata on /gcs/mission_select, not a command) to the drone. That is not
+a convention the frontend is trusted to respect -- it's true because no
+other route touching the real mission/flight-control path exists. See
 docs/REQUIREMENTS.md §6 and docs/CLAUDE.md "Important Constraints" §1.
 
 Separately, POST /api/simulation/run and POST /api/simulation/reset
@@ -33,15 +39,27 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from .config import Settings, get_settings
+from .missions import (
+    MISSION_REGISTRY,
+    MissionDefinition,
+    MissionNotFoundError,
+    ScenarioDefinition,
+    ScenarioNotFoundError,
+    get_mission,
+    get_scenario,
+)
 from .ros_client import (
     BATTERY_TOPIC,
     COVERAGE_GRID_TOPIC,
     FCU_STATE_TOPIC,
+    FLIGHT_TEST_STATUS_TOPIC,
+    FRONTIERS_TOPIC,
     GPS_TOPIC,
     HEARTBEAT_TOPIC,
     IMU_TOPIC,
     MAP_TOPIC,
     MISSION_STATE_TOPIC,
+    MULTI_STEP_TEST_STATUS_TOPIC,
     PERCEPTION_DETECTIONS_TOPIC,
     PERCEPTION_STATUS_TOPIC,
     PLANNED_PATH_TOPIC,
@@ -64,10 +82,17 @@ from .schemas import (
     CommandResponse,
     CoverageResponse,
     FcuStateResponse,
+    FlightTestStatusResponse,
+    FrontierPointResponse,
+    FrontiersResponse,
     GpsResponse,
     HealthResponse,
     MapResponse,
     MappingStatusResponse,
+    MissionResponse,
+    MissionStartRequest,
+    MissionStartResponse,
+    MultiStepFlightTestStatusResponse,
     NavigationResponse,
     PathPointResponse,
     PathResponse,
@@ -75,6 +100,7 @@ from .schemas import (
     PerceptionStatusResponse,
     PoseResponse,
     PositionResponse,
+    ScenarioResponse,
     SensorsResponse,
     SimulationCommandResponse,
     SimulationStatusResponse,
@@ -85,6 +111,28 @@ from .schemas import (
 )
 
 _FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+
+def _scenario_to_response(scenario: ScenarioDefinition) -> ScenarioResponse:
+    return ScenarioResponse(
+        id=scenario.id,
+        name=scenario.name,
+        description=scenario.description,
+        implemented=scenario.implemented,
+        execution_config=scenario.execution_config,
+        steps=list(scenario.steps),
+    )
+
+
+def _mission_to_response(mission: MissionDefinition) -> MissionResponse:
+    return MissionResponse(
+        id=mission.id,
+        name=mission.name,
+        description=mission.description,
+        ui_panel=mission.ui_panel,
+        required_nodes=list(mission.required_nodes),
+        scenarios=[_scenario_to_response(s) for s in mission.scenarios],
+    )
 
 
 def create_app(client: RosBridgeClient | None = None, settings: Settings | None = None) -> FastAPI:
@@ -107,9 +155,13 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
     app = FastAPI(
         title="NIDAR AirMouse GCS Backend",
         description=(
-            "The entire operator command surface is exactly two endpoints: "
-            "POST /api/command/start and POST /api/command/abort. No other "
-            "route can affect the mission -- see docs/REQUIREMENTS.md §6."
+            "The entire operator command surface affecting the real mission "
+            "is exactly three endpoints: POST /api/command/start, "
+            "POST /api/mission/start, and POST /api/command/abort. Mission "
+            "selection only parameterizes which mission profile a "
+            "subsequent start applies to -- it is not a new kind of "
+            "operator action. No other route can affect the mission -- see "
+            "docs/REQUIREMENTS.md §6."
         ),
         lifespan=lifespan,
     )
@@ -257,6 +309,24 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
         ]
         return PathResponse(points=points)
 
+    @app.get("/api/frontiers", response_model=FrontiersResponse, tags=["map"])
+    def frontiers() -> FrontiersResponse:
+        msg = ros_client.latest(FRONTIERS_TOPIC)
+        if msg is None:
+            return FrontiersResponse()
+        # visualization_msgs/Marker.pose is a plain geometry_msgs/Pose, one
+        # level of nesting less than nav_msgs/Path's PoseStamped poses (see
+        # planned_path() above) -- position is at marker["pose"]["position"],
+        # not marker["pose"]["pose"]["position"].
+        points = [
+            FrontierPointResponse(
+                x=(marker.get("pose") or {}).get("position", {}).get("x", 0.0),
+                y=(marker.get("pose") or {}).get("position", {}).get("y", 0.0),
+            )
+            for marker in msg.get("markers", [])
+        ]
+        return FrontiersResponse(points=points)
+
     @app.get("/api/survivors", response_model=list[SurvivorResponse], tags=["survivors"])
     def survivors() -> list[SurvivorResponse]:
         return [SurvivorResponse(**s) for s in ros_client.survivors()]
@@ -334,6 +404,118 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=f"{exc} -- command not sent") from exc
         return CommandResponse(status="sent", command="abort")
+
+    # -- Multi-mission framework ---------------------------------------------
+    #
+    # app/missions.py's static registry is the only source of truth for
+    # which missions/scenarios exist -- these routes only ever read it
+    # (never mutate it) and, for POST /api/mission/start, publish routing
+    # metadata (/gcs/mission_select) immediately before the same "start"
+    # publish_command() above already sends. This does not add a new kind
+    # of operator action: it is still only ever "start" or "abort"
+    # reaching the drone, see the module docstring.
+
+    @app.get("/api/missions", response_model=list[MissionResponse], tags=["missions"])
+    def list_missions() -> list[MissionResponse]:
+        return [_mission_to_response(m) for m in MISSION_REGISTRY]
+
+    @app.get("/api/missions/{mission_id}", response_model=MissionResponse, tags=["missions"])
+    def get_mission_detail(mission_id: str) -> MissionResponse:
+        try:
+            return _mission_to_response(get_mission(mission_id))
+        except MissionNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown mission: {mission_id!r}")
+
+    @app.get(
+        "/api/missions/{mission_id}/scenarios",
+        response_model=list[ScenarioResponse],
+        tags=["missions"],
+    )
+    def get_mission_scenario_list(mission_id: str) -> list[ScenarioResponse]:
+        try:
+            mission = get_mission(mission_id)
+        except MissionNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown mission: {mission_id!r}")
+        return [_scenario_to_response(s) for s in mission.scenarios]
+
+    @app.get("/api/flight-test/status", response_model=FlightTestStatusResponse, tags=["flight_test"])
+    def flight_test_status() -> FlightTestStatusResponse:
+        msg = ros_client.latest(FLIGHT_TEST_STATUS_TOPIC)
+        if not msg:
+            return FlightTestStatusResponse()
+        allowed = set(FlightTestStatusResponse.model_fields)
+        try:
+            return FlightTestStatusResponse(**{k: v for k, v in msg.items() if k in allowed})
+        except ValidationError:
+            # Malformed cached data degrades to defaults, same
+            # degrade-not-500 rule as the perception routes above.
+            return FlightTestStatusResponse()
+
+    @app.get(
+        "/api/flight-test/multi-step/status",
+        response_model=MultiStepFlightTestStatusResponse,
+        tags=["flight_test"],
+    )
+    def multi_step_flight_test_status() -> MultiStepFlightTestStatusResponse:
+        msg = ros_client.latest(MULTI_STEP_TEST_STATUS_TOPIC)
+        if not msg:
+            return MultiStepFlightTestStatusResponse()
+        allowed = set(MultiStepFlightTestStatusResponse.model_fields)
+        try:
+            return MultiStepFlightTestStatusResponse(**{k: v for k, v in msg.items() if k in allowed})
+        except ValidationError:
+            # Same degrade-not-500 rule as flight_test_status above.
+            return MultiStepFlightTestStatusResponse()
+
+    @app.post("/api/mission/start", response_model=MissionStartResponse, tags=["missions"])
+    def start_mission_by_id(body: MissionStartRequest) -> MissionStartResponse:
+        try:
+            scenario = get_scenario(body.mission, body.scenario)
+        except MissionNotFoundError:
+            raise HTTPException(status_code=404, detail=f"unknown mission: {body.mission!r}")
+        except ScenarioNotFoundError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown scenario {body.scenario!r} for mission {body.mission!r}",
+            )
+        if not scenario.implemented:
+            raise HTTPException(status_code=400, detail=f"scenario {body.scenario!r} is not yet implemented")
+
+        # Reject if anything is already active -- derived from real ROS
+        # state, not backend bookkeeping. Both flight-test status topics
+        # are checked (hover_test_node and multi_step_test_node are
+        # separate ROS nodes, but only one flight-test scenario can
+        # meaningfully run at a time from the operator's perspective) --
+        # see MULTI_STEP_TEST_STATUS_TOPIC's docstring in app/ros_client.py
+        # for why they're separate topics in the first place.
+        mission_state_msg = ros_client.latest(MISSION_STATE_TOPIC) or {}
+        real_mission_state = mission_state_msg.get("data")
+        flight_test_msg = ros_client.latest(FLIGHT_TEST_STATUS_TOPIC) or {}
+        flight_test_state = flight_test_msg.get("state")
+        multi_step_msg = ros_client.latest(MULTI_STEP_TEST_STATUS_TOPIC) or {}
+        multi_step_state = multi_step_msg.get("state")
+        if real_mission_state in ("entering", "searching", "exiting"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"cannot start: Main NIDAR mission is already active (state={real_mission_state!r})",
+            )
+        if flight_test_state not in (None, "idle", "complete", "aborted"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"cannot start: Flight Test is already active (state={flight_test_state!r})",
+            )
+        if multi_step_state not in (None, "idle", "complete", "aborted", "failed"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"cannot start: Flight Test is already active (state={multi_step_state!r})",
+            )
+
+        try:
+            ros_client.publish_mission_select(body.mission, body.scenario)
+            ros_client.publish_command("start")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=f"{exc} -- command not sent") from exc
+        return MissionStartResponse(status="sent", mission=body.mission, scenario=body.scenario)
 
     # -- Simulation control surface -----------------------------------------
     #

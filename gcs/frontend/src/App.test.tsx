@@ -188,4 +188,71 @@ describe("App", () => {
 
     vi.unstubAllEnvs();
   });
+
+  it("does NOT render the mission/test select panel by default (competition-build safety)", async () => {
+    vi.spyOn(api, "getTelemetry").mockResolvedValue(TELEMETRY);
+    vi.spyOn(api, "getMap").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getPath").mockResolvedValue({ points: [] });
+    vi.spyOn(api, "getSurvivors").mockResolvedValue([]);
+    vi.spyOn(api, "getPerceptionDetections").mockResolvedValue({
+      frame_width: null, frame_height: null, timestamp: null, detections: [],
+    });
+    vi.spyOn(api, "getPerceptionStatus").mockResolvedValue({
+      camera_connected: null, detector_enabled: null, detector_ready: null, detector_backend: null,
+      model_name: null, person_count: null, fps: null, frame_width: null, frame_height: null,
+      last_detection_age_s: null,
+    });
+    vi.spyOn(api, "getCameraStatus").mockResolvedValue({
+      connected: null, stream_url: null, frame_width: null, frame_height: null, fps: null,
+    });
+    vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
+    const getMissionsSpy = vi.spyOn(api, "getMissions");
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("searching")).toBeInTheDocument());
+
+    // No VITE_ENABLE_MISSION_SELECT set in this test -- per
+    // custom-gcs/CLAUDE.md Important Constraint #1, this dev/bench-only
+    // alternate start path must not exist in the operator-facing surface
+    // unless explicitly opted into.
+    expect(screen.queryByText(/DEV \/ BENCH ONLY — ALTERNATE START PATH/)).not.toBeInTheDocument();
+    expect(getMissionsSpy).not.toHaveBeenCalled();
+  });
+
+  it("renders the mission/test select panel only when VITE_ENABLE_MISSION_SELECT=true", async () => {
+    vi.stubEnv("VITE_ENABLE_MISSION_SELECT", "true");
+    vi.spyOn(api, "getTelemetry").mockResolvedValue(TELEMETRY);
+    vi.spyOn(api, "getMap").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getPath").mockResolvedValue({ points: [] });
+    vi.spyOn(api, "getSurvivors").mockResolvedValue([]);
+    vi.spyOn(api, "getPerceptionDetections").mockResolvedValue({
+      frame_width: null, frame_height: null, timestamp: null, detections: [],
+    });
+    vi.spyOn(api, "getPerceptionStatus").mockResolvedValue({
+      camera_connected: null, detector_enabled: null, detector_ready: null, detector_backend: null,
+      model_name: null, person_count: null, fps: null, frame_width: null, frame_height: null,
+      last_detection_age_s: null,
+    });
+    vi.spyOn(api, "getCameraStatus").mockResolvedValue({
+      connected: null, stream_url: null, frame_width: null, frame_height: null, fps: null,
+    });
+    vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
+    vi.spyOn(api, "getMissions").mockResolvedValue([]);
+    vi.spyOn(api, "getFlightTestStatus").mockResolvedValue({
+      scenario: null, state: null, target_altitude_m: null, current_altitude_m: null,
+      current_position: null, duration_s: null, elapsed_hover_s: null, armed: null, execution_mode: null,
+    });
+    vi.spyOn(api, "getMultiStepFlightTestStatus").mockResolvedValue({
+      scenario_id: null, state: null, phase: null, current_step_index: null, current_step_action: null,
+      total_steps: null, current_position: null, armed: null, execution_mode: null,
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText(/DEV \/ BENCH ONLY — ALTERNATE START PATH/)).toBeInTheDocument();
+
+    vi.unstubAllEnvs();
+  });
 });

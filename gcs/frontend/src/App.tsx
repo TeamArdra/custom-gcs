@@ -13,6 +13,7 @@ import SurvivorsPanel from "./components/SurvivorsPanel";
 import CameraPanel from "./components/CameraPanel";
 import PerceptionPanel from "./components/PerceptionPanel";
 import SimulationPanel from "./components/SimulationPanel";
+import MissionSelectPanel from "./components/MissionSelectPanel";
 import Footer from "./components/Footer";
 
 export default function App() {
@@ -31,6 +32,17 @@ export default function App() {
   // the component (not as a module-level constant) so it reflects the
   // environment at render time, not just at first import.
   const simulationEnabled = import.meta.env.VITE_ENABLE_SIMULATION === "true";
+
+  // Same gating rationale/pattern as simulationEnabled above, a SEPARATE
+  // flag (never reuse VITE_ENABLE_SIMULATION, a different concern) --
+  // this panel is an additional, alternate, explicitly-gated way to
+  // start a mission with a specific mission_id/scenario_id (dev/bench
+  // test-scenario selection), not a replacement for the real
+  // ControlsPanel START, which stays exactly as-is regardless of this
+  // flag. Opt in explicitly for local development/testing:
+  //   VITE_ENABLE_MISSION_SELECT=true npm run dev
+  // Never set this for a competition build.
+  const missionSelectEnabled = import.meta.env.VITE_ENABLE_MISSION_SELECT === "true";
 
   const subtitle = error
     ? `telemetry fetch failed: ${error}`
@@ -68,6 +80,17 @@ export default function App() {
           </div>
           <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
             <SimulationPanel />
+          </div>
+        </>
+      )}
+
+      {missionSelectEnabled && (
+        <>
+          <div className="mt-6 mb-2 text-xs uppercase tracking-wide text-accent font-semibold">
+            Mission / Test Select — dev/bench-only alternate start path
+          </div>
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
+            <MissionSelectPanel telemetry={telemetry} />
           </div>
         </>
       )}
