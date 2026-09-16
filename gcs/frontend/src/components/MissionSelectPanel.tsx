@@ -155,7 +155,7 @@ export default function MissionSelectPanel({ telemetry }: { telemetry: Telemetry
                 onChange={(e) => selectMission(e.target.value)}
               >
                 {(missions ?? []).map((m) => (
-                  <option key={m.id} value={m.id}>
+                  <option key={m.id} value={m.id} className="bg-panel text-text">
                     {m.name}
                   </option>
                 ))}
@@ -171,15 +171,21 @@ export default function MissionSelectPanel({ telemetry }: { telemetry: Telemetry
                 disabled={!selectedMission}
                 onChange={(e) => setSelectedScenarioId(e.target.value)}
               >
-                <option value="" disabled>
+                <option value="" disabled className="bg-panel text-text">
                   select a scenario
                 </option>
-                {(selectedMission?.scenarios ?? []).map((s) => (
-                  <option key={s.id} value={s.id} disabled={!s.implemented}>
-                    {s.name}
-                    {s.implemented ? "" : " (coming soon)"}
-                  </option>
-                ))}
+                {/* Only scenarios the team has actually implemented are ever
+                    offered -- see app/missions.py's registry, the source of
+                    truth. This is a defense-in-depth filter, not the primary
+                    guard: the registry itself no longer carries placeholder
+                    "coming soon" entries. */}
+                {(selectedMission?.scenarios ?? [])
+                  .filter((s) => s.implemented)
+                  .map((s) => (
+                    <option key={s.id} value={s.id} className="bg-panel text-text">
+                      {s.name}
+                    </option>
+                  ))}
               </select>
             </label>
           </div>

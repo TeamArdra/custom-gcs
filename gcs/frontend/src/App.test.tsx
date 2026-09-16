@@ -60,6 +60,7 @@ describe("App", () => {
     });
     vi.spyOn(api, "getHealth").mockResolvedValue({
       connected: true,
+      ros_status: "connected",
       rosbridge_host: "127.0.0.1",
       rosbridge_port: 9090,
     });
@@ -106,6 +107,7 @@ describe("App", () => {
     });
     vi.spyOn(api, "getHealth").mockResolvedValue({
       connected: false,
+      ros_status: "unavailable",
       rosbridge_host: "127.0.0.1",
       rosbridge_port: 9090,
     });
@@ -134,7 +136,7 @@ describe("App", () => {
     vi.spyOn(api, "getCameraStatus").mockResolvedValue({
       connected: null, stream_url: null, frame_width: null, frame_height: null, fps: null,
     });
-    vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
+    vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, ros_status: "connected", rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
     const simStatusSpy = vi.spyOn(api, "getSimulationStatus");
 
     render(<App />);
@@ -167,7 +169,7 @@ describe("App", () => {
     vi.spyOn(api, "getCameraStatus").mockResolvedValue({
       connected: null, stream_url: null, frame_width: null, frame_height: null, fps: null,
     });
-    vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
+    vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, ros_status: "connected", rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
     vi.spyOn(api, "getSimulationStatus").mockResolvedValue({
       source: "simulation", status: "idle", mission_state: "idle", step: 0, elapsed_sim_seconds: 0,
       pose: null,
@@ -206,7 +208,7 @@ describe("App", () => {
     vi.spyOn(api, "getCameraStatus").mockResolvedValue({
       connected: null, stream_url: null, frame_width: null, frame_height: null, fps: null,
     });
-    vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
+    vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, ros_status: "connected", rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
     const getMissionsSpy = vi.spyOn(api, "getMissions");
 
     render(<App />);
@@ -238,7 +240,7 @@ describe("App", () => {
     vi.spyOn(api, "getCameraStatus").mockResolvedValue({
       connected: null, stream_url: null, frame_width: null, frame_height: null, fps: null,
     });
-    vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
+    vi.spyOn(api, "getHealth").mockResolvedValue({ connected: true, ros_status: "connected", rosbridge_host: "127.0.0.1", rosbridge_port: 9090 });
     vi.spyOn(api, "getMissions").mockResolvedValue([]);
     vi.spyOn(api, "getFlightTestStatus").mockResolvedValue({
       scenario: null, state: null, target_altitude_m: null, current_altitude_m: null,

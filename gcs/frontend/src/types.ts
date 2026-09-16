@@ -3,8 +3,23 @@
 // (see custom-gcs/CLAUDE.md: "Docs and interfaces before code" -- this
 // file is the frontend half of that contract).
 
+// "connected": ROS enabled and rosbridge reachable right now.
+// "disabled": the backend was started with GCS_ROS_ENABLED=false --
+//   ROS-optional local-development mode (no Jetson, no ROS, no rosbridge
+//   available at all, e.g. a plain Windows laptop) -- and never attempts
+//   any ROS/rosbridge connectivity. Mission/scenario metadata still
+//   works; START/ABORT/mission-start/simulation commands 503 instead of
+//   pretending to succeed.
+// "unavailable": ROS is enabled but rosbridge is not currently reachable
+//   (Jetson off, rosbridge_server not running, wrong host/port, network
+//   down, ...). Deliberately distinct from "disabled" so the operator can
+//   tell "we chose not to connect" apart from "we tried and failed."
+// See gcs/backend/app/schemas.py's HealthResponse docstring.
+export type RosStatus = "connected" | "disabled" | "unavailable";
+
 export interface HealthResponse {
   connected: boolean;
+  ros_status: RosStatus;
   rosbridge_host: string;
   rosbridge_port: number;
 }

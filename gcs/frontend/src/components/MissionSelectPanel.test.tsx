@@ -51,7 +51,7 @@ const MISSIONS: Mission[] = [
         id: "forward_backward_hover", name: "Test 1: Forward / Backward / Hover", description: "...",
         implemented: true, execution_config: {}, steps: ["forward", "backward", "hover"],
       },
-      { id: "forward", name: "Move Forward", description: "Coming soon.", implemented: false, execution_config: {}, steps: [] },
+      { id: "not_yet_wired", name: "Not Yet Wired", description: "Registered but not implemented.", implemented: false, execution_config: {}, steps: [] },
     ],
   },
 ];
@@ -95,14 +95,18 @@ describe("MissionSelectPanel", () => {
     expect(screen.getByRole("button", { name: "START" })).not.toBeDisabled();
   });
 
-  it("shows a not-implemented scenario disabled in the dropdown and unselectable", async () => {
+  it("never renders a not-implemented scenario as an option at all", async () => {
+    // Only scenarios the team has actually implemented are ever offered --
+    // no "coming soon" placeholder, greyed-out or otherwise. The backend
+    // registry (app/missions.py) is the primary guard (it no longer
+    // carries placeholder entries); this is the UI's defense-in-depth
+    // filter for the same rule.
     mockApis();
     render(<MissionSelectPanel telemetry={IDLE_TELEMETRY} />);
     await waitFor(() => expect(api.getMissions).toHaveBeenCalled());
 
     fireEvent.change(screen.getByLabelText("Mission"), { target: { value: "flight_test" } });
-    const option = screen.getByRole("option", { name: /Move Forward/ }) as HTMLOptionElement;
-    expect(option.disabled).toBe(true);
+    expect(screen.queryByRole("option", { name: /Not Yet Wired/ })).not.toBeInTheDocument();
   });
 
   it("shows the ordered steps for the selected scenario", async () => {
