@@ -133,6 +133,40 @@ zero occurrences of its UI strings in the built JS). To see/test it
 locally: `VITE_ENABLE_SIMULATION=true npm run dev` (or `... npm run
 build`). **Never set this flag for a competition build.**
 
+## Mission / Test Select
+
+The GCS frontend also has a "Mission / Test Select" panel (dashed-accent-
+bordered, badged "DEV / BENCH ONLY — ALTERNATE START PATH") that lets an
+operator pick a complete named test procedure — e.g. "Test 1: Forward /
+Backward / Hover" — from a dropdown backed by the backend's mission/
+scenario registry (`gcs/backend/app/missions.py`), see its ordered steps,
+and START it. It sends no new kind of command: `POST /api/mission/start`
+still only ever publishes the same real `"start"` the plain START button
+(`ControlsPanel.tsx`) sends, parameterized with which mission/scenario
+profile it applies to. Selection locks while that mission/scenario is
+active and unlocks again on completion/abort; ABORT is not duplicated
+here, `ControlsPanel.tsx` stays the single abort control.
+
+**Gated OFF by default in the frontend build**, same reasoning and same
+pattern as "RUN SIMULATION" above — a competition-deployed build must not
+expose an additional clickable control. `gcs/frontend/src/App.tsx` only
+renders this panel when `VITE_ENABLE_MISSION_SELECT=true` is set at
+build/dev-server time. **To see/test it locally** (this is the command
+that actually shows the dropdown — the plain `npm run dev` does not):
+
+```sh
+cd gcs/frontend
+VITE_ENABLE_MISSION_SELECT=true npm run dev
+```
+
+(Windows/PowerShell: `$env:VITE_ENABLE_MISSION_SELECT = "true"; npm run dev`.)
+Works fully with the backend in ROS-disabled local-development mode
+(`GCS_ROS_ENABLED=false` — see `gcs/backend/README.md`): the mission
+registry and step previews are plain application data with no ROS
+dependency; only pressing START degrades, honestly 503ing rather than
+pretending a mission started. **Never set this flag for a competition
+build.**
+
 ## Next Step
 
 See `../CHECKPOINT/NEXT.md` for the live, dated next-actions list. In

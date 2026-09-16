@@ -103,25 +103,6 @@ MISSION_REGISTRY: tuple[MissionDefinition, ...] = (
                 implemented=True,
                 steps=("sideways", "hover", "sideways", "hover"),
             ),
-            ScenarioDefinition(
-                id="forward", name="Move Forward", description="Coming soon.", implemented=False, steps=(),
-            ),
-            ScenarioDefinition(
-                id="backward", name="Move Backward", description="Coming soon.", implemented=False, steps=(),
-            ),
-            ScenarioDefinition(
-                id="left", name="Move Left", description="Coming soon.", implemented=False, steps=(),
-            ),
-            ScenarioDefinition(
-                id="right", name="Move Right", description="Coming soon.", implemented=False, steps=(),
-            ),
-            ScenarioDefinition(
-                id="yaw", name="Yaw", description="Coming soon.", implemented=False, steps=(),
-            ),
-            ScenarioDefinition(
-                id="square", name="Square / Waypoint Pattern", description="Coming soon.",
-                implemented=False, steps=(),
-            ),
         ),
     ),
 )

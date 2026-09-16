@@ -27,6 +27,8 @@ from app.ros_client import (
     SURVIVORS_TOPIC,
     TELEMETRY_STATE_TOPIC,
     VALID_COMMANDS,
+    VALID_SIMULATION_COMMANDS,
+    DisabledRosBridgeClient,
     RosBridgeClient,
 )
 
@@ -203,6 +205,76 @@ class TestJsonStringTopicConversion:
         feed(client, PERCEPTION_STATUS_TOPIC, {"data": 12345})  # TypeError guarded (json.loads(int))
 
         assert client.latest(PERCEPTION_STATUS_TOPIC) is None
+
+
+class TestDisabledRosBridgeClient:
+    """DisabledRosBridgeClient (app/ros_client.py) -- what
+    app/main.py's create_app() wires in when GCS_ROS_ENABLED=false. See
+    tests/test_ros_disabled.py for the API-level behavior this drives;
+    these are the class's own pure-logic guarantees: never connected,
+    never touches the network, every read degrades to empty/None, every
+    write raises rather than pretending to succeed."""
+
+    def test_is_connected_is_always_false(self):
+        client = DisabledRosBridgeClient()
+        assert client.is_connected is False
+
+    def test_connect_and_disconnect_are_harmless_no_ops(self):
+        client = DisabledRosBridgeClient()
+        client.connect()  # must not raise, must not touch the network
+        client.disconnect()
+        assert client.is_connected is False
+
+    def test_latest_is_always_none(self):
+        client = DisabledRosBridgeClient()
+        assert client.latest("/mavros/battery") is None
+
+    def test_age_s_is_always_none(self):
+        client = DisabledRosBridgeClient()
+        assert client.age_s("/gcs/heartbeat") is None
+
+    def test_survivors_is_always_empty(self):
+        client = DisabledRosBridgeClient()
+        assert client.survivors() == []
+
+    def test_statustext_history_is_always_empty(self):
+        client = DisabledRosBridgeClient()
+        assert client.statustext_history() == []
+
+    def test_publish_command_raises_runtime_error_not_a_fake_success(self):
+        """The core safety property: a disabled client must never let a
+        caller believe "start" reached anything real."""
+        client = DisabledRosBridgeClient()
+        with pytest.raises(RuntimeError, match="ROS is disabled"):
+            client.publish_command("start")
+
+    def test_publish_command_still_validates_the_command_first(self):
+        client = DisabledRosBridgeClient()
+        with pytest.raises(ValueError, match="invalid command"):
+            client.publish_command("land")
+
+    def test_publish_simulation_command_raises_runtime_error(self):
+        client = DisabledRosBridgeClient()
+        with pytest.raises(RuntimeError, match="ROS is disabled"):
+            client.publish_simulation_command("run")
+
+    def test_publish_simulation_command_still_validates_first(self):
+        client = DisabledRosBridgeClient()
+        with pytest.raises(ValueError, match="invalid simulation command"):
+            client.publish_simulation_command("start")
+
+    def test_publish_mission_select_raises_runtime_error(self):
+        client = DisabledRosBridgeClient()
+        with pytest.raises(RuntimeError, match="ROS is disabled"):
+            client.publish_mission_select("flight_test", "hover")
+
+    def test_publish_mission_select_still_validates_first(self):
+        client = DisabledRosBridgeClient()
+        with pytest.raises(ValueError, match="must be non-empty"):
+            client.publish_mission_select("", "hover")
+
+    def test_valid_simulation_commands_constant_still_applies(self):
+        assert set(VALID_SIMULATION_COMMANDS) == {"run", "reset"}
 
 
 class TestStatusTextHistory:

@@ -622,7 +622,7 @@ def test_list_missions_returns_both_missions_with_correct_shape():
     assert len(main_nidar["scenarios"]) == 1
     flight_test = next(m for m in body if m["id"] == "flight_test")
     assert flight_test["ui_panel"] == "flight_test"
-    assert len(flight_test["scenarios"]) == 9
+    assert len(flight_test["scenarios"]) == 3
 
 
 def test_get_mission_detail_for_known_missions():
@@ -643,13 +643,16 @@ def test_get_mission_detail_unknown_mission_404s():
     assert resp.status_code == 404
 
 
-def test_get_mission_scenario_list_returns_nine_scenarios_three_implemented():
+def test_get_mission_scenario_list_returns_three_scenarios_all_implemented():
+    """No "coming soon" placeholder scenarios -- a scenario is only in the
+    registry (and therefore only ever offered by this endpoint) once it's
+    actually implemented; see app/missions.py."""
     client, _ = make_client()
     body = client.get("/api/missions/flight_test/scenarios").json()
 
-    assert len(body) == 9
-    implemented = [s for s in body if s["implemented"] is True]
-    assert {s["id"] for s in implemented} == {"hover", "forward_backward_hover", "sideways_hover_sideways_hover"}
+    assert len(body) == 3
+    assert all(s["implemented"] is True for s in body)
+    assert {s["id"] for s in body} == {"hover", "forward_backward_hover", "sideways_hover_sideways_hover"}
 
 
 def test_get_mission_scenario_list_includes_steps():
@@ -660,7 +663,6 @@ def test_get_mission_scenario_list_includes_steps():
     assert by_id["forward_backward_hover"]["steps"] == ["forward", "backward", "hover"]
     assert by_id["sideways_hover_sideways_hover"]["steps"] == ["sideways", "hover", "sideways", "hover"]
     assert by_id["hover"]["steps"] == ["takeoff", "hover", "land"]
-    assert by_id["forward"]["steps"] == []
 
 
 def test_flight_test_status_before_any_data_arrives():
@@ -848,9 +850,30 @@ def test_mission_start_unknown_scenario_400s_and_publishes_nothing():
     assert fake.published_commands == []
 
 
-def test_mission_start_not_implemented_scenario_400s_and_publishes_nothing():
+def test_mission_start_not_implemented_scenario_400s_and_publishes_nothing(monkeypatch):
+    """The real registry (app/missions.py) no longer carries any
+    "implemented=False" placeholder scenario -- see
+    tests/test_missions.py -- so this exercises main.py's own
+    `if not scenario.implemented` guard directly via a temporary
+    monkeypatched registry entry, rather than relying on a permanent
+    placeholder scenario that shouldn't exist in production."""
+    from app.missions import MissionDefinition, ScenarioDefinition
+
+    import app.missions as missions_module
+
+    not_implemented = MissionDefinition(
+        id="flight_test", name="Flight Test", description="...", ui_panel="flight_test",
+        required_nodes=(),
+        scenarios=(
+            ScenarioDefinition(id="staged", name="Staged", description="...", implemented=False),
+        ),
+    )
+    monkeypatch.setattr(
+        missions_module, "MISSION_REGISTRY", (not_implemented,),
+    )
+
     client, fake = make_client()
-    resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "forward"})
+    resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "staged"})
 
     assert resp.status_code == 400
     assert fake.published_mission_selects == []

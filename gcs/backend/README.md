@@ -39,6 +39,32 @@ every endpoint testable by clicking "Try it out," no frontend required.
 
 To point at the real Jetson later: `ROSBRIDGE_HOST=<jetson-ip> ROSBRIDGE_PORT=9090 uvicorn app.main:app` — no code changes.
 
+## Local development without ROS/rosbridge (no Jetson, no `sim/`)
+
+Set `GCS_ROS_ENABLED=false` and skip the rosbridge-speaking server
+entirely — `app/config.py`'s `Settings.ros_enabled` (default `true`,
+matching the real Jetson deployment) switches `app/main.py`'s
+`create_app()` to wire in `app/ros_client.py`'s `DisabledRosBridgeClient`
+instead of a real `RosBridgeClient`, so the app never attempts any
+ROS/rosbridge connectivity and never crashes for lack of it:
+
+```sh
+# Windows (PowerShell)
+$env:GCS_ROS_ENABLED = "false"
+..\..\.venv\Scripts\uvicorn.exe app.main:app --host 127.0.0.1 --port 8000
+
+# macOS/Linux
+GCS_ROS_ENABLED=false uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+`GET /health` then reports `"ros_status": "disabled"`. Mission/scenario
+metadata (`GET /api/missions` and friends, `app/missions.py`'s static
+registry) works identically to the ROS-enabled case since it never
+touches `ros_client`. Every ROS-dependent write (`/api/command/start`,
+`/api/mission/start`, `/api/command/abort`, `/api/simulation/*`) 503s
+with a `"ROS is disabled"` detail — it never fakes a sent command. See
+`tests/test_ros_disabled.py`.
+
 ## Test it
 
 ```sh

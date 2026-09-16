@@ -291,3 +291,71 @@ class RosBridgeClient:
                 "timestamp": time.time(),
             })
         }))
+
+
+_ROS_DISABLED_MESSAGE = "ROS is disabled (GCS_ROS_ENABLED=false) -- not connected to rosbridge"
+
+
+class DisabledRosBridgeClient:
+    """Stand-in for RosBridgeClient when ROS connectivity is turned off
+    entirely via GCS_ROS_ENABLED=false (see app/config.py) -- the
+    ROS-optional local-development mode: no Jetson, no ROS, no rosbridge,
+    e.g. a plain Windows laptop. app/main.py's create_app() wires this in
+    instead of a real RosBridgeClient when settings.ros_enabled is False.
+
+    Same public interface as RosBridgeClient (every route in app/main.py
+    only ever calls latest()/survivors()/publish_command()/etc., so it
+    can't tell the two apart at the call-site level -- this is the same
+    hardware-isolation seam RosBridgeClient's own docstring describes),
+    but this class never opens a socket, never touches roslibpy or its
+    Twisted reactor, and `is_connected` is always False. That is
+    deliberate: this reports an honest "ROS is off" state, never a faked
+    "connected" one (see custom-gcs/CLAUDE.md's constraints on not
+    fabricating mission/telemetry state). Every read falls back to the
+    same "no data yet" empty/None values app/main.py's routes already
+    handle for a real-but-not-yet-populated cache, and every mutating
+    method raises RuntimeError -- mirroring exactly how RosBridgeClient
+    reports "not connected to rosbridge" today, so app/main.py's existing
+    `except RuntimeError -> HTTPException(503, ...)` handling on every
+    command route requires no changes to also cover this path. In
+    particular, START can never come back as "sent" when ROS is
+    disabled -- it always 503s.
+    """
+
+    is_connected = False
+
+    def connect(self) -> None:
+        """Deliberate no-op -- there is nothing to connect to, and this
+        must never attempt any network I/O."""
+
+    def disconnect(self) -> None:
+        """Deliberate no-op, symmetric with connect()."""
+
+    def latest(self, topic: str) -> Any:
+        return None
+
+    def age_s(self, topic: str) -> float | None:
+        return None
+
+    def survivors(self) -> list[dict]:
+        return []
+
+    def statustext_history(self) -> list[dict]:
+        return []
+
+    def publish_command(self, command: str) -> None:
+        if command not in VALID_COMMANDS:
+            raise ValueError(f"invalid command: {command!r}; must be one of {VALID_COMMANDS}")
+        raise RuntimeError(_ROS_DISABLED_MESSAGE)
+
+    def publish_simulation_command(self, command: str) -> None:
+        if command not in VALID_SIMULATION_COMMANDS:
+            raise ValueError(
+                f"invalid simulation command: {command!r}; must be one of {VALID_SIMULATION_COMMANDS}"
+            )
+        raise RuntimeError(_ROS_DISABLED_MESSAGE)
+
+    def publish_mission_select(self, mission_id: str, scenario_id: str) -> None:
+        if not mission_id or not scenario_id:
+            raise ValueError("mission_id and scenario_id must be non-empty")
+        raise RuntimeError(_ROS_DISABLED_MESSAGE)

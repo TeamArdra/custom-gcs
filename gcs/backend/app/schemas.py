@@ -10,6 +10,17 @@ from pydantic import BaseModel
 
 class HealthResponse(BaseModel):
     connected: bool
+    # "connected": ROS enabled and rosbridge reachable right now.
+    # "disabled": GCS_ROS_ENABLED=false -- this backend was started in
+    #   ROS-optional local-development mode (see app/config.py,
+    #   app/ros_client.py's DisabledRosBridgeClient) and never attempts
+    #   any ROS/rosbridge connectivity at all.
+    # "unavailable": ROS enabled but rosbridge is not currently reachable
+    #   (no Jetson, rosbridge_server not running, wrong host/port, network
+    #   down, ...). Deliberately distinct from "disabled" so an
+    #   operator/developer can tell "we chose not to connect" apart from
+    #   "we tried and failed" at a glance.
+    ros_status: str
     rosbridge_host: str
     rosbridge_port: int
 

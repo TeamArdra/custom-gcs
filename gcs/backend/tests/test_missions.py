@@ -43,20 +43,18 @@ def test_hover_scenario_has_display_only_steps():
     assert hover.steps == ("takeoff", "hover", "land")
 
 
-def test_every_other_flight_test_scenario_is_not_implemented():
+def test_flight_test_mission_has_exactly_three_scenarios_all_implemented():
+    """The registry no longer carries placeholder "coming soon" scenarios
+    (Move Forward/Backward/Left/Right/Yaw/Square) -- a scenario only
+    belongs in MISSION_REGISTRY once it's actually implemented and
+    intentionally available; see custom-gcs/README.md's Mission/Test
+    Select section."""
     mission = get_mission("flight_test")
-    still_coming_soon = {"forward", "backward", "left", "right", "yaw", "square"}
-    for scenario in mission.scenarios:
-        if scenario.id in still_coming_soon:
-            assert scenario.implemented is False
-            assert scenario.steps == ()
-
-
-def test_flight_test_mission_has_exactly_nine_scenarios():
-    mission = get_mission("flight_test")
-    assert len(mission.scenarios) == 9
-    implemented = [s for s in mission.scenarios if s.implemented]
-    assert {s.id for s in implemented} == {"hover", "forward_backward_hover", "sideways_hover_sideways_hover"}
+    assert len(mission.scenarios) == 3
+    assert all(s.implemented for s in mission.scenarios)
+    assert {s.id for s in mission.scenarios} == {
+        "hover", "forward_backward_hover", "sideways_hover_sideways_hover",
+    }
 
 
 def test_get_mission_raises_for_unknown_mission():

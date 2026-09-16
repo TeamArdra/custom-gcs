@@ -5,6 +5,23 @@ rosbridge at startup per Settings (app/config.py) and disconnects at
 shutdown. Tests instead pass `client=<a fake>` to get an app wired to a
 test double with no real networking -- see tests/fakes.py.
 
+ROS-optional local development: if Settings.ros_enabled is False
+(GCS_ROS_ENABLED=false -- see app/config.py), create_app() wires in
+app/ros_client.py's DisabledRosBridgeClient instead of a real
+RosBridgeClient, so this app never attempts any ROS/rosbridge
+connectivity at all -- lets the FastAPI backend (and, pointed at it, the
+frontend) start and be exercised on a machine with no Jetson, no ROS, no
+rosbridge (e.g. a plain Windows laptop). Mission/scenario metadata
+(GET /api/missions and friends, backed by app/missions.py's static
+registry) works identically either way since it never touches ros_client.
+ROS-dependent reads degrade to their normal "no data yet" empty/None
+shape; ROS-dependent writes (START/ABORT/mission-start/simulation)
+503 with a clear "ROS is disabled" detail rather than pretending to have
+sent anything -- this mode never fakes a connection or a mission start.
+Separately, even when ROS *is* enabled, a failed connect() at startup
+(rosbridge unreachable) is caught and logged rather than crashing the
+app -- see lifespan() below.
+
 The API surface is intentionally small. In particular: there is no route
 that can modify navigation, the map, or survivor tags, and there are
 exactly three mutating routes affecting the REAL mission (POST
@@ -30,6 +47,7 @@ imports mavros_msgs/flight_command.py at all).
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -72,6 +90,7 @@ from .ros_client import (
     SIMULATION_TELEMETRY_STATE_TOPIC,
     TELEMETRY_STATE_TOPIC,
     VELOCITY_TOPIC,
+    DisabledRosBridgeClient,
     RosBridgeClient,
 )
 from .schemas import (
@@ -135,17 +154,59 @@ def _mission_to_response(mission: MissionDefinition) -> MissionResponse:
     )
 
 
-def create_app(client: RosBridgeClient | None = None, settings: Settings | None = None) -> FastAPI:
+def create_app(
+    client: RosBridgeClient | DisabledRosBridgeClient | None = None,
+    settings: Settings | None = None,
+) -> FastAPI:
     settings = settings or get_settings()
     owns_client = client is None
-    ros_client = client if client is not None else RosBridgeClient(
-        settings.rosbridge_host, settings.rosbridge_port, settings.connect_timeout_s
-    )
+    if client is not None:
+        ros_client = client
+    elif settings.ros_enabled:
+        ros_client = RosBridgeClient(
+            settings.rosbridge_host, settings.rosbridge_port, settings.connect_timeout_s
+        )
+    else:
+        # GCS_ROS_ENABLED=false -- ROS-optional local-development mode,
+        # see this module's docstring. Never falls back to this silently:
+        # it's exactly and only settings.ros_enabled being False that
+        # selects it.
+        ros_client = DisabledRosBridgeClient()
+
+    def ros_status() -> str:
+        """"connected" / "disabled" / "unavailable" -- see
+        HealthResponse.ros_status's docstring in app/schemas.py. Derived
+        from settings.ros_enabled, never from the concrete ros_client
+        type, so this reports correctly whether ros_client is a real
+        RosBridgeClient, a DisabledRosBridgeClient, or a test double
+        (tests/fakes.py's FakeRosBridgeClient) that has no concept of
+        "disabled" at all."""
+        if not settings.ros_enabled:
+            return "disabled"
+        return "connected" if ros_client.is_connected else "unavailable"
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         if owns_client:
-            ros_client.connect()
+            try:
+                ros_client.connect()
+            except Exception as exc:
+                # rosbridge unreachable (no Jetson, rosbridge_server not
+                # running, wrong host/port, network down, ...) -- log and
+                # keep running disconnected rather than crashing FastAPI
+                # startup. Every route already degrades gracefully when
+                # ros_client.is_connected is False (see e.g. /api/telemetry
+                # above), and GET /health's ros_status reports
+                # "unavailable" so this is never silently upgraded to
+                # "connected". When settings.ros_enabled is False,
+                # ros_client.connect() is DisabledRosBridgeClient's
+                # deliberate no-op and never raises, so this branch is
+                # specific to the ROS-enabled-but-unreachable case.
+                logging.getLogger(__name__).warning(
+                    "ROS connection failed (rosbridge unavailable at %s:%s): %s "
+                    "-- continuing without ROS connectivity",
+                    settings.rosbridge_host, settings.rosbridge_port, exc,
+                )
         try:
             yield
         finally:
@@ -177,6 +238,7 @@ def create_app(client: RosBridgeClient | None = None, settings: Settings | None 
     def health() -> HealthResponse:
         return HealthResponse(
             connected=ros_client.is_connected,
+            ros_status=ros_status(),
             rosbridge_host=settings.rosbridge_host,
             rosbridge_port=settings.rosbridge_port,
         )

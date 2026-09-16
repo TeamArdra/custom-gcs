@@ -8,11 +8,38 @@ import os
 from dataclasses import dataclass
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """Parses a boolean-ish environment variable ("true"/"1"/"yes"/"on",
+    case-insensitive, -> True; anything else present -> False; unset ->
+    `default`). Never raises on a typo'd value -- it just falls through to
+    False, which is always the more conservative reading for a switch
+    like GCS_ROS_ENABLED below (accidentally disabling ROS is safe and
+    obvious at a glance; accidentally enabling it on a typo is not)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True)
 class Settings:
     rosbridge_host: str = os.environ.get("ROSBRIDGE_HOST", "127.0.0.1")
     rosbridge_port: int = int(os.environ.get("ROSBRIDGE_PORT", "9090"))
     connect_timeout_s: float = float(os.environ.get("ROSBRIDGE_CONNECT_TIMEOUT_S", "5"))
+    # Master switch for whether this backend attempts ROS/rosbridge
+    # connectivity at all. Defaults to True -- the existing Jetson
+    # deployment's behavior (always try to connect) is completely
+    # unchanged unless this is explicitly opted out. Set
+    # GCS_ROS_ENABLED=false for local frontend/backend development with
+    # no Jetson, no ROS, no rosbridge available at all (e.g. a Windows
+    # laptop) -- app/main.py then wires in app/ros_client.py's
+    # DisabledRosBridgeClient instead of a real RosBridgeClient, so the
+    # app never even attempts a roslibpy connection. Deliberately a
+    # backend-only setting (GCS_ROS_ENABLED, not VITE_-prefixed): the
+    # frontend has no ROS state of its own to hold, it only ever reflects
+    # what this backend reports via GET /health's ros_status field -- see
+    # app/schemas.py's HealthResponse.
+    ros_enabled: bool = _env_bool("GCS_ROS_ENABLED", True)
     # Port of the Jetson's own lightweight MJPEG-over-HTTP server -- NOT
     # part of rosbridge (see docs/DECISIONS.md D-6, docs/DATA_MODELS.md
     # §7); this backend never proxies video bytes, only builds the URL.
