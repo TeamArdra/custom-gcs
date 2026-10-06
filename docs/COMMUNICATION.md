@@ -260,3 +260,23 @@ any topic in §2's table: `/simulation/command` accepts only
 further here since it is not part of the real Drone ↔ GCS contract this
 file describes — this section exists only so a reader of this file knows
 the second channel exists and where to find it.
+
+## 6. Telemetry-Radio Command Path (start/abort without Wi-Fi)
+
+Added 2026-10-06. A second *transport* for the same two commands — not a
+new command or topic. The laptop sends `start`/`abort` over a MicroLR900
+telemetry radio on a Pixhawk TELEM port; ArduPilot's MAVLink routing
+forwards it over Ethernet to mavros; onboard-autonomy's
+`telem_command_bridge_node` republishes exactly `"start"`/`"abort"` on
+the existing `/gcs/command` topic. Everything downstream (command_node
+validation, mission_state_node arm/disarm) is unchanged. The Pixhawk only
+relays the frame; the command is still addressed to and acted on by the
+Jetson.
+
+Wire format: `COMMAND_LONG(MAV_CMD_USER_1)` addressed to mavros's own
+system/component id; `param1` = 1 (start) / 2 (abort), `param2` = nonce
+(resends reuse it; the Jetson forwards each nonce once), `param3` = 4242
+(magic). The Jetson replies with `COMMAND_ACK`. Defined in
+`onboard-autonomy/nidar_autonomy/nidar_autonomy/telem_command_codec.py`;
+laptop side is `tools/telem_command.py`. Telemetry/map/video still use
+§2's rosbridge/video channels.
