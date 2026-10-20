@@ -1,146 +1,169 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ControlsPanel from "./ControlsPanel";
 import * as api from "../api";
+import type { RadioCommandResponse, RadioStatusResponse } from "../types";
+
+const HOVER = { id: "hover", name: "Hover", description: "real hover" };
+const MOTOR_TEST = { id: "motor_test", name: "Motor Test", description: "props off" };
+
+const RADIO_UP: RadioStatusResponse = {
+  enabled: true,
+  port: "COM5",
+  baud: 115200,
+  port_open: true,
+  port_error: null,
+  jetson_link_up: true,
+  jetson_heartbeat_age_s: 0.4,
+  jetson_mission_state: "idle",
+  last_command: null,
+};
+
+function accepted(command: "start" | "abort"): RadioCommandResponse {
+  return { status: "accepted", command, mission: command === "start" ? "hover" : null, nonce: 7, attempts: 1 };
+}
+
+beforeEach(() => {
+  vi.spyOn(api, "getMissions").mockResolvedValue([HOVER, MOTOR_TEST]);
+  vi.spyOn(api, "getRadioStatus").mockResolvedValue(RADIO_UP);
+  vi.spyOn(api, "getFlightTestStatus").mockResolvedValue({
+    scenario: "hover", state: "idle", target_altitude_m: 0.5, current_altitude_m: null,
+    current_position: null, duration_s: 10, elapsed_hover_s: null, armed: false,
+    execution_mode: "real", detail: "waiting for START", flight_mode: "STABILIZE",
+  });
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("ControlsPanel", () => {
-  it("clicking START calls postCommand('start')", async () => {
-    const spy = vi.spyOn(api, "postCommand").mockResolvedValue({ status: "ok", command: "start" });
-    render(<ControlsPanel />);
+async function renderReady() {
+  render(<ControlsPanel telemetry={null} />);
+  await screen.findByRole("option", { name: "Hover" });
+}
 
+describe("ControlsPanel (Mission Control)", () => {
+  it("shows a Mission dropdown with Hover and Motor Test, Hover selected by default", async () => {
+    await renderReady();
+    const select = screen.getByRole("combobox", { name: "Mission" }) as HTMLSelectElement;
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Hover", "Motor Test"]);
+    expect(select.value).toBe("hover");
+    expect(screen.getByText(/REAL FLIGHT\. START \(Hover\)/)).toBeInTheDocument();
+  });
+
+  it("selecting Motor Test sends its id on START and shows the props-off warning", async () => {
+    const spy = vi.spyOn(api, "postMissionStart").mockResolvedValue({ ...accepted("start"), mission: "motor_test" });
+    await renderReady();
+    fireEvent.change(screen.getByRole("combobox", { name: "Mission" }), { target: { value: "motor_test" } });
+    expect(screen.getByText(/PROPS OFF\. START \(Motor Test\)/)).toBeInTheDocument();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "START" }));
     });
-
-    expect(spy).toHaveBeenCalledWith("start");
+    expect(spy).toHaveBeenCalledWith("motor_test");
   });
 
-  it("clicking ABORT calls postCommand('abort')", async () => {
-    const spy = vi.spyOn(api, "postCommand").mockResolvedValue({ status: "ok", command: "abort" });
-    render(<ControlsPanel />);
+  it("names the active mission next to its radio state", async () => {
+    vi.spyOn(api, "getRadioStatus").mockResolvedValue({ ...RADIO_UP, jetson_mission: "motor_test", jetson_mission_state: "testing" });
+    await renderReady();
+    expect(await screen.findByText("testing")).toBeInTheDocument();
+    // once in the Mission dropdown, once in the status line
+    expect(screen.getAllByText("Motor Test")).toHaveLength(2);
+  });
 
+  it("START sends the selected mission id", async () => {
+    const spy = vi.spyOn(api, "postMissionStart").mockResolvedValue(accepted("start"));
+    await renderReady();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "START" }));
+    });
+    expect(spy).toHaveBeenCalledWith("hover");
+    expect(await screen.findByText(/Jetson ACCEPTED START \(hover\)/)).toBeInTheDocument();
+  });
+
+  it("ABORT calls postAbort", async () => {
+    const spy = vi.spyOn(api, "postAbort").mockResolvedValue(accepted("abort"));
+    await renderReady();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "STOP / ABORT" }));
     });
-
-    expect(spy).toHaveBeenCalledWith("abort");
+    expect(spy).toHaveBeenCalled();
+    expect(await screen.findByText(/Jetson ACCEPTED ABORT/)).toBeInTheDocument();
   });
 
-  it("disables START while its own request is in flight, and re-enables after", async () => {
-    let resolveCommand: (v: { status: string; command: string }) => void = () => {};
-    vi.spyOn(api, "postCommand").mockReturnValue(
-      new Promise((resolve) => {
-        resolveCommand = resolve;
-      }),
+  it("a rejected START is shown as not accepted, with the Jetson's reason", async () => {
+    vi.spyOn(api, "postMissionStart").mockRejectedValue(
+      new Error("POST /api/mission/start failed: HTTP 409: Jetson REJECTED START: FCU_NOT_CONNECTED"),
     );
-    render(<ControlsPanel />);
-
-    const startBtn = screen.getByRole("button", { name: "START" });
-
-    fireEvent.click(startBtn);
-
-    await waitFor(() => expect(startBtn).toBeDisabled());
-
+    await renderReady();
     await act(async () => {
-      resolveCommand({ status: "ok", command: "start" });
+      fireEvent.click(screen.getByRole("button", { name: "START" }));
     });
-    await waitFor(() => expect(startBtn).not.toBeDisabled());
+    expect(await screen.findByText(/START not accepted: .*FCU_NOT_CONNECTED/)).toBeInTheDocument();
+    expect(screen.queryByText(/ACCEPTED START/)).not.toBeInTheDocument();
   });
 
-  it("never disables ABORT because of a pending START -- ABORT fires immediately regardless", async () => {
-    let resolveStart: (v: { status: string; command: string }) => void = () => {};
-    const spy = vi.spyOn(api, "postCommand").mockImplementation((command) => {
-      if (command === "start") {
-        return new Promise((resolve) => {
-          resolveStart = resolve;
-        });
-      }
-      return Promise.resolve({ status: "ok", command });
-    });
-    render(<ControlsPanel />);
+  it("never disables ABORT because of a pending START", async () => {
+    let resolveStart: (v: RadioCommandResponse) => void = () => {};
+    vi.spyOn(api, "postMissionStart").mockReturnValue(new Promise((r) => (resolveStart = r)));
+    const abortSpy = vi.spyOn(api, "postAbort").mockResolvedValue(accepted("abort"));
+    await renderReady();
 
     const startBtn = screen.getByRole("button", { name: "START" });
     const abortBtn = screen.getByRole("button", { name: "STOP / ABORT" });
-
     fireEvent.click(startBtn);
     await waitFor(() => expect(startBtn).toBeDisabled());
 
-    // ABORT must stay enabled and fire immediately, without waiting for
-    // the still-pending START request to resolve.
     expect(abortBtn).not.toBeDisabled();
     await act(async () => {
       fireEvent.click(abortBtn);
     });
-    expect(spy).toHaveBeenCalledWith("abort");
+    expect(abortSpy).toHaveBeenCalled();
 
     await act(async () => {
-      resolveStart({ status: "ok", command: "start" });
+      resolveStart(accepted("start"));
     });
     await waitFor(() => expect(startBtn).not.toBeDisabled());
   });
 
-  it("disables ABORT only while its own request is in flight, and re-enables after", async () => {
-    let resolveAbort: (v: { status: string; command: string }) => void = () => {};
-    vi.spyOn(api, "postCommand").mockReturnValue(
-      new Promise((resolve) => {
-        resolveAbort = resolve;
-      }),
-    );
-    render(<ControlsPanel />);
-
-    const startBtn = screen.getByRole("button", { name: "START" });
-    const abortBtn = screen.getByRole("button", { name: "STOP / ABORT" });
-
-    fireEvent.click(abortBtn);
-
-    await waitFor(() => expect(abortBtn).toBeDisabled());
-    // START must not be disabled by ABORT's in-flight state either.
-    expect(startBtn).not.toBeDisabled();
-
-    await act(async () => {
-      resolveAbort({ status: "ok", command: "abort" });
-    });
-    await waitFor(() => expect(abortBtn).not.toBeDisabled());
-  });
-
-  it("shows an inline error on command failure, without throwing", async () => {
-    vi.spyOn(api, "postCommand").mockRejectedValue(new Error("HTTP 503"));
-    render(<ControlsPanel />);
-
+  it("a failed ABORT tells the operator to use the RC transmitter", async () => {
+    vi.spyOn(api, "postAbort").mockRejectedValue(new Error("HTTP 504"));
+    await renderReady();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "STOP / ABORT" }));
     });
-
-    expect(await screen.findByText(/ABORT failed: HTTP 503/)).toBeInTheDocument();
+    expect(await screen.findByText(/ABORT not confirmed: HTTP 504 — USE THE RC TRANSMITTER/)).toBeInTheDocument();
   });
 
-  it("keeps both START and ABORT error messages visible when both fail close together", async () => {
-    vi.spyOn(api, "postCommand").mockImplementation((command) =>
-      Promise.reject(new Error(`HTTP 503 (${command})`)),
-    );
-    render(<ControlsPanel />);
+  it("shows RADIO LINK DOWN when no Jetson heartbeat arrives", async () => {
+    vi.spyOn(api, "getRadioStatus").mockResolvedValue({ ...RADIO_UP, jetson_link_up: false, jetson_heartbeat_age_s: 9 });
+    await renderReady();
+    expect(await screen.findByText(/RADIO LINK DOWN/)).toBeInTheDocument();
+  });
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "START" }));
-      fireEvent.click(screen.getByRole("button", { name: "STOP / ABORT" }));
+  it("shows a closed radio port with its error", async () => {
+    vi.spyOn(api, "getRadioStatus").mockResolvedValue({
+      ...RADIO_UP, port_open: false, jetson_link_up: false, port_error: "could not open port 'COM5'",
     });
-
-    expect(await screen.findByText(/START failed: HTTP 503 \(start\)/)).toBeInTheDocument();
-    expect(await screen.findByText(/ABORT failed: HTTP 503 \(abort\)/)).toBeInTheDocument();
+    await renderReady();
+    expect(await screen.findByText(/PORT COM5 NOT OPEN/)).toBeInTheDocument();
   });
 
-  it("does not render any confirmation control before ABORT", () => {
-    render(<ControlsPanel />);
-    // Exactly two buttons: START and STOP/ABORT -- no "confirm" dialog.
+  it("has exactly two buttons -- no confirmation step before ABORT", async () => {
+    await renderReady();
     expect(screen.getAllByRole("button")).toHaveLength(2);
   });
 
-  it("shows the bench-test safety note", () => {
-    render(<ControlsPanel />);
-    expect(screen.getByText(/BENCH TEST — PROPS REMOVED/)).toBeInTheDocument();
+  it("shows one readable status block: link, mission with state badge, detail, vehicle", async () => {
+    vi.spyOn(api, "getRadioStatus").mockResolvedValue({ ...RADIO_UP, jetson_mission: "hover", jetson_mission_state: "aborted" });
+    vi.spyOn(api, "getFlightTestStatus").mockResolvedValue({
+      scenario: "hover", state: "aborted", target_altitude_m: 0.5, current_altitude_m: null,
+      current_position: null, duration_s: 10, elapsed_hover_s: null, armed: false,
+      execution_mode: "real", detail: "landed and disarmed after ABORT", flight_mode: "LAND",
+    });
+    render(<ControlsPanel telemetry={null} />);
+    expect(await screen.findByText("aborted")).toBeInTheDocument();
+    expect(screen.getByText("landed and disarmed after ABORT")).toBeInTheDocument();
+    expect(screen.getByText(/LINK UP · heartbeat 0.4 s ago/)).toBeInTheDocument();
+    expect(screen.getByText("Pixhawk not connected (no FCU telemetry)")).toBeInTheDocument();
   });
 });

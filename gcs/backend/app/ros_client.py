@@ -94,6 +94,13 @@ VALID_SIMULATION_COMMANDS = ("run", "reset")
 # "abort" on COMMAND_TOPIC. See CHECKPOINT/INTEGRATION_CHECKPOINTS.md --
 # the Jetson/mavros remain the only things that ever command the Pixhawk.
 FCU_STATE_TOPIC = "/mavros/state"
+# LiDAR scan reduced to 72 sectors -- only over the radio (app/radio_telemetry.py,
+# from the Jetson's OBSTACLE_DISTANCE); rosbridge has no such topic.
+LIDAR_TOPIC = "/lidar/sectors"
+# SLAM pose of the LiDAR in the map frame -- radio only (TUNNEL SLAM_POSE).
+SLAM_POSE_TOPIC = "/slam/pose"
+# The map as the organiser's 1 m arena grid -- radio only (TUNNEL ARENA_GRID).
+ARENA_GRID_TOPIC = "/arena/grid"
 STATUSTEXT_TOPIC = "/mavros/statustext/recv"
 VELOCITY_TOPIC = "/mavros/local_position/velocity_local"
 GPS_TOPIC = "/mavros/global_position/global"
@@ -162,16 +169,15 @@ class RosBridgeClient:
             sub = roslibpy.Topic(self._ros, topic, msg_type)
             sub.subscribe(self._make_handler(topic))
             self._subscriptions.append(sub)
-        self._command_topic = roslibpy.Topic(self._ros, COMMAND_TOPIC, _COMMAND_TOPIC_TYPE)
-        self._command_topic.advertise()
+        # The real /gcs/command and /gcs/mission_select are deliberately NOT
+        # advertised: START/ABORT go only over the MicroLR900 command radio
+        # (app/radio_link.py), and the Jetson's rosbridge whitelist rejects
+        # them anyway. publish_command()/publish_mission_select() therefore
+        # always fail loudly ("not connected") instead of reaching the drone.
         self._simulation_command_topic = roslibpy.Topic(
             self._ros, SIMULATION_COMMAND_TOPIC, _COMMAND_TOPIC_TYPE
         )
         self._simulation_command_topic.advertise()
-        self._mission_select_topic = roslibpy.Topic(
-            self._ros, MISSION_SELECT_TOPIC, _COMMAND_TOPIC_TYPE
-        )
-        self._mission_select_topic.advertise()
 
     def disconnect(self) -> None:
         for sub in self._subscriptions:

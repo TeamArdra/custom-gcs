@@ -6,8 +6,9 @@ import {
   getMultiStepFlightTestStatus,
   getPerceptionDetections,
   getPerceptionStatus,
+  getRadioStatus,
   getTelemetry,
-  postCommand,
+  postAbort,
   postMissionStart,
 } from "./api";
 
@@ -37,24 +38,20 @@ describe("api.ts", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/telemetry");
   });
 
-  it("postCommand('start') calls exactly POST /api/command/start", async () => {
-    const fetchMock = mockFetchOnce({ status: "ok", command: "start" });
-    await postCommand("start");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/command/start");
-    expect(init).toMatchObject({ method: "POST" });
-    expect(init.signal).toBeInstanceOf(AbortSignal);
-  });
-
-  it("postCommand('abort') calls exactly POST /api/command/abort", async () => {
-    const fetchMock = mockFetchOnce({ status: "ok", command: "abort" });
-    await postCommand("abort");
+  it("postAbort calls exactly POST /api/command/abort", async () => {
+    const fetchMock = mockFetchOnce({ status: "accepted", command: "abort", mission: null, nonce: 1, attempts: 1 });
+    await postAbort();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/command/abort");
     expect(init).toMatchObject({ method: "POST" });
     expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("getRadioStatus calls exactly /api/radio/status", async () => {
+    const fetchMock = mockFetchOnce({ enabled: true, port_open: true, jetson_link_up: true });
+    await getRadioStatus();
+    expect(fetchMock).toHaveBeenCalledWith("/api/radio/status");
   });
 
   it("getPerceptionDetections calls exactly /api/perception/detections", async () => {
@@ -116,20 +113,20 @@ describe("api.ts", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/flight-test/multi-step/status");
   });
 
-  it("postMissionStart posts a JSON body with the mission/scenario ids to /api/mission/start", async () => {
-    const fetchMock = mockFetchOnce({ status: "sent", mission: "flight_test", scenario: "hover" });
-    await postMissionStart("flight_test", "hover");
+  it("postMissionStart posts exactly {mission} to /api/mission/start", async () => {
+    const fetchMock = mockFetchOnce({ status: "accepted", command: "start", mission: "hover", nonce: 1, attempts: 1 });
+    await postMissionStart("hover");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/mission/start");
     expect(init).toMatchObject({ method: "POST" });
-    expect(JSON.parse(init.body as string)).toEqual({ mission: "flight_test", scenario: "hover" });
+    expect(JSON.parse(init.body as string)).toEqual({ mission: "hover" });
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("no call ever uses an absolute URL with a host", async () => {
-    const fetchMock = mockFetchOnce({ status: "ok", command: "start" });
-    await postCommand("start");
+    const fetchMock = mockFetchOnce({ status: "accepted" });
+    await postMissionStart("hover");
     const [url] = fetchMock.mock.calls[0];
     expect(url).not.toMatch(/^https?:\/\//);
     expect((url as string).startsWith("/")).toBe(true);
@@ -140,23 +137,28 @@ describe("api.ts", () => {
     await expect(getTelemetry()).rejects.toThrow(/503/);
   });
 
-  it("postCommand surfaces the backend's structured detail message on a non-OK status", async () => {
-    mockFetchOnce({ detail: "not connected to rosbridge -- command not sent" }, false, 503);
-    await expect(postCommand("abort")).rejects.toThrow(
-      "POST /api/command/abort failed: HTTP 503: not connected to rosbridge -- command not sent",
+  it("postAbort surfaces the backend's structured detail message on a non-OK status", async () => {
+    mockFetchOnce({ detail: "radio port COM5 is not open -- ABORT not sent" }, false, 503);
+    await expect(postAbort()).rejects.toThrow(
+      "POST /api/command/abort failed: HTTP 503: radio port COM5 is not open -- ABORT not sent",
     );
   });
 
-  it("postCommand falls back to a bare HTTP status when the error body has no detail field", async () => {
-    mockFetchOnce({}, false, 500);
-    await expect(postCommand("start")).rejects.toThrow("POST /api/command/start failed: HTTP 500");
+  it("postMissionStart surfaces a Jetson rejection (409) instead of resolving", async () => {
+    mockFetchOnce({ detail: "Jetson REJECTED START: MISSION_NOT_READY" }, false, 409);
+    await expect(postMissionStart("hover")).rejects.toThrow(/409: Jetson REJECTED START: MISSION_NOT_READY/);
   });
 
-  it("postCommand('start') rejects with a clear timeout error at 5000ms instead of hanging forever", async () => {
+  it("postAbort falls back to a bare HTTP status when the error body has no detail field", async () => {
+    mockFetchOnce({}, false, 500);
+    await expect(postAbort()).rejects.toThrow("POST /api/command/abort failed: HTTP 500");
+  });
+
+  it("postMissionStart rejects with a clear timeout error at 5000ms instead of hanging forever", async () => {
     vi.useFakeTimers();
     // A fetch that never resolves on its own, but honours the
     // AbortSignal like a real fetch implementation would -- this is what
-    // lets postCommand's timeout actually unblock the caller.
+    // lets the timeout actually unblock the caller.
     const fetchMock = vi.fn((_path: string, init?: RequestInit) => {
       return new Promise((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => {
@@ -166,14 +168,14 @@ describe("api.ts", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const pending = expect(postCommand("start")).rejects.toThrow(/timed out after 5000ms/);
+    const pending = expect(postMissionStart("hover")).rejects.toThrow(/timed out after 5000ms/);
     await vi.advanceTimersByTimeAsync(5000);
     await pending;
 
     vi.useRealTimers();
   });
 
-  it("postCommand('abort') times out much sooner (1500ms), not the 5000ms START bound", async () => {
+  it("postAbort times out sooner (3000ms), not the 5000ms START bound", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn((_path: string, init?: RequestInit) => {
       return new Promise((_resolve, reject) => {
@@ -184,14 +186,14 @@ describe("api.ts", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const pending = expect(postCommand("abort")).rejects.toThrow(/timed out after 1500ms/);
-    await vi.advanceTimersByTimeAsync(1500);
+    const pending = expect(postAbort()).rejects.toThrow(/timed out after 3000ms/);
+    await vi.advanceTimersByTimeAsync(3000);
     await pending;
 
     vi.useRealTimers();
   });
 
-  it("does not abort postCommand('abort') early -- it still hasn't fired by 1000ms", async () => {
+  it("does not abort postAbort early -- it still hasn't fired by 2500ms (covers radio retries)", async () => {
     vi.useFakeTimers();
     let aborted = false;
     const fetchMock = vi.fn((_path: string, init?: RequestInit) => {
@@ -203,8 +205,8 @@ describe("api.ts", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    postCommand("abort").catch(() => {});
-    await vi.advanceTimersByTimeAsync(1000);
+    postAbort().catch(() => {});
+    await vi.advanceTimersByTimeAsync(2500);
     expect(aborted).toBe(false);
 
     vi.useRealTimers();

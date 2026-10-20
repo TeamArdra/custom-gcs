@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 
-from .fakes import FakeRosBridgeClient
+from .fakes import FakeRadioLink, FakeRosBridgeClient
 
 
 def make_client() -> tuple[TestClient, FakeRosBridgeClient]:
@@ -32,25 +32,16 @@ class TestSimulationDoesNotTouchTheRealCommandPath:
         assert fake.published_commands == []
         assert fake.published_simulation_commands == ["reset"]
 
-    def test_real_start_never_touches_simulation_command(self):
-        client, fake = make_client()
-        client.post("/api/command/start")
-        assert fake.published_simulation_commands == []
-        assert fake.published_commands == ["start"]
-
-    def test_real_abort_never_touches_simulation_command(self):
-        client, fake = make_client()
-        client.post("/api/command/abort")
-        assert fake.published_simulation_commands == []
-        assert fake.published_commands == ["abort"]
-
-    def test_both_surfaces_coexist_without_interference(self):
-        client, fake = make_client()
-        client.post("/api/command/start")
+    def test_real_start_and_abort_never_touch_simulation_command(self):
+        fake = FakeRosBridgeClient()
+        radio = FakeRadioLink()
+        client = TestClient(create_app(client=fake, radio=radio))
+        client.post("/api/mission/start", json={"mission": "hover"})
         client.post("/api/simulation/run")
         client.post("/api/command/abort")
         client.post("/api/simulation/reset")
-        assert fake.published_commands == ["start", "abort"]
+        assert radio.sent == [("start", 1), ("abort", 0)]
+        assert fake.published_commands == []
         assert fake.published_simulation_commands == ["run", "reset"]
 
     def test_run_response_shape(self):
@@ -143,7 +134,7 @@ class TestSimulationMapCoveragePath:
     def test_map_before_any_data(self):
         client, _ = make_client()
         body = client.get("/api/simulation/map").json()
-        assert body == {"resolution": None, "width": None, "height": None, "data": None}
+        assert body == {"resolution": None, "width": None, "height": None, "data": None, "origin_x": None, "origin_y": None, "robot": None, "age_s": None, "arena": None}
 
     def test_map_reflects_simulation_topic_not_real_map_topic(self):
         client, fake = make_client()

@@ -260,3 +260,95 @@ any topic in §2's table: `/simulation/command` accepts only
 further here since it is not part of the real Drone ↔ GCS contract this
 file describes — this section exists only so a reader of this file knows
 the second channel exists and where to find it.
+
+## 6. Command Radio (START/ABORT) -- MicroLR900, terminates at the Jetson
+
+Added 2026-10-07. START and ABORT no longer travel over Wi-Fi/rosbridge.
+They go over a dedicated 900 MHz MicroLR900 radio pair whose far end is
+plugged into the **Jetson** (USB serial) -- the Pixhawk is not on this
+link. Telemetry, map and video keep using the channels in §2.
+
+```
+GCS backend (app/radio_link.py, COM5 @ 115200)
+  )))  MicroLR900  )))  MicroLR900
+Jetson radio_command_node (/dev/serial/by-id/...CP2102..., 115200)
+  -> /gcs/mission_select {"mission_id": "hover"} -> /gcs/command "start"
+  -> command_node -> hover mission (NidarFiles/missions/hover) -> MAVROS -> Pixhawk
+```
+
+Wire format (private two-node MAVLink2 network; GCS 255/190, Jetson 1/191):
+
+| Message | Direction | Fields |
+|---|---|---|
+| `COMMAND_LONG` (`MAV_CMD_USER_1` = 31010) | GCS → Jetson | `param1` 1 = START / 2 = ABORT, `param2` nonce (< 2^24, reused on resend), `param3` magic 4242, `param4` mission code (Hover = 1, Motor Test = 2), `param7` protocol version 2 |
+| `COMMAND_ACK` | Jetson → GCS | `result` MAV_RESULT, `progress` reason code (0 OK, 1 UNKNOWN_MISSION, 2 BAD_PROTOCOL_VERSION, 3 MISSION_NOT_READY, 4 FCU_NOT_CONNECTED, 5 MISSION_BUSY), `result_param2` = request nonce |
+| `HEARTBEAT` (1 Hz) | both | Jetson's `custom_mode` = (active mission code << 8) \| mission state code (0 = mission unknown) |
+
+Rules: each nonce is acted on once (resends are re-ACKed with the original
+answer); ABORT is always accepted; an unknown mission is rejected, never
+mapped to another mission. The GCS reports success only for an ACK with
+`result` = ACCEPTED -- no ACK is an error (HTTP 504), a rejection is HTTP
+409 with the reason. Definitions: Jetson
+`onboard-autonomy/nidar_autonomy/nidar_autonomy/telem_command_codec.py`,
+GCS mirror `gcs/backend/app/radio_protocol.py` (keep in sync).
+
+The GCS no longer publishes `/gcs/command` or `/gcs/mission_select` over
+rosbridge; on the Jetson those topics are published only by
+`radio_command_node`.
+
+### 6.1 Telemetry over the radio (no Wi-Fi link)
+
+Added 2026-10-07. The drone has **no Wi-Fi link** to the GCS: no hotspot,
+no rosbridge. The MicroLR900 radio is the only Jetson ↔ GCS link, so
+`radio_command_node` also relays telemetry over it
+(`onboard-autonomy/.../radio_telemetry.py`), and the GCS backend turns it
+back into the same ROS-shaped data the panels read
+(`gcs/backend/app/radio_telemetry.py`, selected by
+`GCS_TELEMETRY_SOURCE=radio`, the default; `rosbridge` remains for
+development against `sim/`).
+
+| Message | From | Content | Rate |
+|---|---|---|---|
+| `HEARTBEAT` | 1/191 Jetson | mission state (`custom_mode`), as above; link-up signal | 1 Hz |
+| `STATUSTEXT` | 1/191 Jetson | hover mission `detail` (chunked if > 50 chars) | on change, repeated every 5 s |
+| `NAMED_VALUE_FLOAT` | 1/191 Jetson | `hv_alt`, `hv_tgt`, `hv_dur`, `hv_elap` (hover altitude, target, hold time, elapsed) | 1 Hz |
+| `HEARTBEAT` | 1/1 FCU relay | armed / guided (`base_mode`), ArduCopter mode number (`custom_mode`), `system_status`; sent only while MAVROS is connected | 1 Hz |
+| `SYS_STATUS` | 1/1 FCU relay | battery voltage (mV), current (cA, ROS sign), remaining (%); unknown = 65535 / -1 / -1 | 1 Hz |
+| `LOCAL_POSITION_NED` | 1/1 FCU relay | x y z vx vy vz | 2 Hz |
+| `ATTITUDE_QUATERNION` | 1/1 FCU relay | q1..q4 = w x y z | 2 Hz |
+| `STATUSTEXT` | 1/1 FCU relay | `/mavros/statustext/recv` (≤ 2 frames per tick, queue of 20) | as received |
+
+Component 1/1 carries the **Pixhawk's state as MAVROS reports it**,
+relayed by the Jetson; the Pixhawk itself is still not on the radio.
+Position, velocity and attitude are in the ROS ENU/FLU frame MAVROS
+publishes, **not** NED -- both ends are ours and the GCS shows the ROS
+values unchanged. Stale inputs are not sent (and the GCS drops values
+older than a few seconds), so a lost link or FCU shows as missing data,
+never as frozen data. Load at the default 2 Hz is about 250 B/s, kept
+low because START/ABORT ACKs share the radio's air time
+(TODO(hardware): measure the radio's real throughput before raising it).
+
+Not available without Wi-Fi: live video (MJPEG, §2.3), the map/coverage/
+path topics and perception -- the radio is too slow for them. None of
+these are used by the hover mission.
+
+### 6.2 Bench parameter access (Setup page; not a mission interface)
+
+Added 2026-10-08. Only when the GCS backend runs with `GCS_SETUP_ENABLED`
+(`start_gcs.ps1 -Setup`) -- otherwise the routes `/api/setup/param*` do
+not exist -- and, for writes, only when the Jetson's `radio_command_node`
+runs with `allow_param_write` (`start_jetson.sh --setup`).
+
+| Message | Direction | Content |
+|---|---|---|
+| `PARAM_REQUEST_READ` | GCS → Jetson 1/191 | by name (`param_index` = -1) |
+| `PARAM_SET` | GCS → Jetson 1/191 | name, value |
+| `PARAM_VALUE` | Jetson → GCS | the value now on the FCU (read back via MAVROS after a write) |
+| `STATUSTEXT` `"PARAM: <NAME>: <reason>"` | Jetson → GCS | refusal; never shown as mission detail |
+
+The Jetson reads/writes through MAVROS (`/mavros/param` get/set_parameters)
+and refuses writes while armed (or armed state unknown), while any mission
+is mid-run, for non-ArduPilot names, non-finite values, or non-whole values
+for integer parameters. Chunked refusal texts use STATUSTEXT ids 0x8000+;
+the telemetry relay uses 1..0x7FFF.
+

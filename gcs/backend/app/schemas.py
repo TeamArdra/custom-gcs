@@ -21,6 +21,13 @@ class HealthResponse(BaseModel):
     #   operator/developer can tell "we chose not to connect" apart from
     #   "we tried and failed" at a glance.
     ros_status: str
+    # "radio": telemetry over the MicroLR900 radio (app/radio_telemetry.py),
+    # `connected` = Jetson heartbeats arriving; ros_status is then
+    # "disabled". "rosbridge": the Wi-Fi path, as described above.
+    telemetry_source: str = "rosbridge"
+    # True only when started for bench setup (GCS_SETUP_ENABLED): the
+    # frontend then shows the Setup section.
+    setup_enabled: bool = False
     rosbridge_host: str
     rosbridge_port: int
 
@@ -148,11 +155,48 @@ class TelemetryResponse(BaseModel):
     navigation: NavigationResponse = NavigationResponse()
 
 
+class RobotPoseResponse(BaseModel):
+    """Position in the map frame (metres) and heading (degrees,
+    counter-clockwise from +x) -- from SLAM over the radio."""
+
+    x: float
+    y: float
+    yaw_deg: float
+
+
+class ArenaGridResponse(BaseModel):
+    """The map as the organiser's 1 m grid (radio ARENA_GRID; see
+    radio_protocol.py for the frame). Edge values: 0 unknown, 1 open, 2 wall.
+    v_edges[r][k]: west edge of column col0 + k in row row0 + r (k = cols:
+    east edge of the last column). h_edges[k][c]: south edge of row row0 + k
+    in column col0 + c (k = rows: north edge of the last row)."""
+
+    theta_deg: float
+    offset_u: float
+    offset_v: float
+    entry_u: int
+    entry_v: int
+    col0: int
+    row0: int
+    cols: int
+    rows: int
+    v_edges: list[list[int]]
+    h_edges: list[list[int]]
+    age_s: float | None = None
+
+
 class MapResponse(BaseModel):
     resolution: float | None = None
     width: int | None = None
     height: int | None = None
     data: list[int] | None = None
+    # Where cell (0,0)'s corner is in the map frame (metres), and the SLAM
+    # pose of the LiDAR/drone -- only with the radio SLAM map (start_jetson.sh --map).
+    origin_x: float | None = None
+    origin_y: float | None = None
+    robot: RobotPoseResponse | None = None
+    age_s: float | None = None
+    arena: ArenaGridResponse | None = None
 
 
 class CoverageResponse(BaseModel):
@@ -275,32 +319,17 @@ class CommandResponse(BaseModel):
     command: str
 
 
-class ScenarioResponse(BaseModel):
-    id: str
-    name: str
-    description: str
-    implemented: bool
-    execution_config: dict = {}
-    steps: list[str] = []
-
-
 class MissionResponse(BaseModel):
     id: str
     name: str
     description: str
-    ui_panel: str
-    required_nodes: list[str] = []
-    scenarios: list[ScenarioResponse] = []
 
 
 class FlightTestStatusResponse(BaseModel):
-    """Snapshot of /flight_test/status (hover_test_node) -- own,
-    deliberately separate type from PerceptionStatusResponse/
-    SimulationStatusResponse even though structurally similar, this
-    repo's established convention (see SimulationStatusResponse's own
-    docstring). `execution_mode` is always "mock" for now -- a
-    permanent, honest wire-contract fact meaning "this is not real
-    flight," not a placeholder to be replaced later."""
+    """Snapshot of /flight_test/status. Published by the real hover mission
+    on the Jetson (missions/hover/mission.py) with execution_mode "real".
+    `execution_mode` is shown as-is so a real run is never confused with
+    a mock/simulated one."""
 
     scenario: str | None = None
     state: str | None = None
@@ -311,6 +340,10 @@ class FlightTestStatusResponse(BaseModel):
     elapsed_hover_s: float | None = None
     armed: bool | None = None
     execution_mode: str | None = None
+    # Added for the real hover mission (missions/hover on the Jetson),
+    # which publishes execution_mode "real" on this same topic.
+    detail: str | None = None
+    flight_mode: str | None = None
 
 
 class MultiStepFlightTestStatusResponse(BaseModel):
@@ -336,13 +369,68 @@ class MultiStepFlightTestStatusResponse(BaseModel):
 
 class MissionStartRequest(BaseModel):
     mission: str
-    scenario: str
 
 
-class MissionStartResponse(BaseModel):
+class RadioCommandResponse(BaseModel):
+    """A START/ABORT the Jetson ACKNOWLEDGED AND ACCEPTED over the radio.
+    Only ever returned with status "accepted" -- no ACK and rejections are
+    HTTP errors (504 / 409), never a 200."""
+
     status: str
-    mission: str
-    scenario: str
+    command: str
+    mission: str | None = None
+    nonce: int
+    attempts: int
+
+
+class RadioLastCommand(BaseModel):
+    command: str
+    mission_code: int
+    nonce: int
+    attempts: int
+    acked: bool
+    result: int | None = None
+    reason: str | None = None
+    time: str = ""
+
+
+class ComponentStatus(BaseModel):
+    """One drone part on the Components panel. status: "ok" (its data keeps
+    arriving), "lost" (it stopped), "missing" (never heard)."""
+
+    key: str
+    name: str
+    status: str
+    age_s: float | None = None
+    detail: str | None = None
+
+
+class ComponentsResponse(BaseModel):
+    """available=False: not on the radio telemetry path (rosbridge/sim),
+    where the Components panel has nothing to report."""
+
+    available: bool = False
+    components: list[ComponentStatus] = []
+
+
+class RadioStatusResponse(BaseModel):
+    enabled: bool
+    port: str | None = None
+    baud: int | None = None
+    port_open: bool
+    port_error: str | None = None
+    # Jetson heartbeats received over the radio within the last few seconds.
+    jetson_link_up: bool
+    jetson_heartbeat_age_s: float | None = None
+    # Mission state carried in the Jetson's radio heartbeat (works without Wi-Fi).
+    jetson_mission_state: str | None = None
+    # Which mission that state belongs to ("hover", "motor_test"; None = unknown).
+    jetson_mission: str | None = None
+    # Radio diagnostics: messages received per MAVLink type since start, and
+    # frames that failed to parse/checksum (garbled on the radio).
+    rx_counts: dict[str, int] = {}
+    rx_bad_bytes: int = 0
+    last_command: RadioLastCommand | None = None
 
 
 class SimulationCommandResponse(BaseModel):
@@ -392,3 +480,30 @@ class SimulationStatusResponse(BaseModel):
     map_known_pct: float = 0.0
     coverage_search_pct: float = 0.0
     error: str | None = None
+
+
+class ParamWriteRequest(BaseModel):
+    """Bench Setup page only (GCS_SETUP_ENABLED)."""
+
+    name: str
+    value: float
+
+
+class ParamResponse(BaseModel):
+    name: str
+    value: float
+    attempts: int
+
+
+class LidarResponse(BaseModel):
+    """Live LiDAR scan reduced to sectors (radio: OBSTACLE_DISTANCE from the
+    Jetson). Angles clockwise from the drone's nose; distances_cm[i] is the
+    nearest return at angle_offset_deg + i*increment_deg, None = no return."""
+
+    available: bool = False
+    age_s: float | None = None
+    angle_offset_deg: float = 0.0
+    increment_deg: float = 5.0
+    min_cm: int | None = None
+    max_cm: int | None = None
+    distances_cm: list[int | None] = []

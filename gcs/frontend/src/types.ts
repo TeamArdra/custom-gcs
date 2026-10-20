@@ -20,6 +20,11 @@ export type RosStatus = "connected" | "disabled" | "unavailable";
 export interface HealthResponse {
   connected: boolean;
   ros_status: RosStatus;
+  // "radio": telemetry over the MicroLR900 radio (no Wi-Fi link);
+  // "rosbridge": the Wi-Fi/rosbridge path (development against sim/).
+  telemetry_source?: "radio" | "rosbridge";
+  // True only when the backend was started for bench setup (start_gcs.ps1 -Setup).
+  setup_enabled?: boolean;
   rosbridge_host: string;
   rosbridge_port: number;
 }
@@ -140,6 +145,40 @@ export interface MapResponse {
   width: number | null;
   height: number | null;
   data: number[] | null;
+  // Radio SLAM map only (start_jetson.sh, unless --no-map): map-frame origin of cell
+  // (0,0), the LiDAR/drone pose from SLAM, and how old the map is.
+  origin_x?: number | null;
+  origin_y?: number | null;
+  robot?: { x: number; y: number; yaw_deg: number } | null;
+  age_s?: number | null;
+  // The map as the organiser's 1 m grid (radio ARENA_GRID), if the Jetson
+  // has aligned one yet -- see ArenaGrid.
+  arena?: ArenaGrid | null;
+}
+
+// Edge states: 0 unknown, 1 open, 2 wall.
+export type ArenaEdge = 0 | 1 | 2;
+
+// The SLAM map as the organiser's 1 m arena grid (backend ArenaGridResponse).
+// Arena frame: u = x cos(theta) + y sin(theta), v = -x sin(theta) + y cos(theta)
+// in map-frame metres; cell (col, row) spans u from offset_u + entry_u + col,
+// v from offset_v + entry_v + row, 1 m each. Cell (0, 0) = take-off cell.
+// v_edges[r][k]: west edge of column col0 + k in row row0 + r (k = cols: east
+// edge of the last column); h_edges[k][c]: south edge of row row0 + k in
+// column col0 + c (k = rows: north edge of the last row).
+export interface ArenaGrid {
+  theta_deg: number;
+  offset_u: number;
+  offset_v: number;
+  entry_u: number;
+  entry_v: number;
+  col0: number;
+  row0: number;
+  cols: number;
+  rows: number;
+  v_edges: ArenaEdge[][];
+  h_edges: ArenaEdge[][];
+  age_s?: number | null;
 }
 
 // Same shape as MapResponse -- the coverage grid is also a
@@ -233,51 +272,57 @@ export interface CameraStatusResponse {
   fps: number | null;
 }
 
-export interface CommandResponse {
-  status: string;
+// START/ABORT go over the MicroLR900 command radio (backend
+// app/radio_link.py). A 200 means the Jetson ACKed AND accepted the
+// command; no-ACK (504) and rejection (409) arrive as errors. The operator
+// command surface is exactly START (for a selected mission) and ABORT --
+// see custom-gcs/CLAUDE.md Important Constraints #1.
+export interface RadioCommandResponse {
+  status: "accepted";
+  command: "start" | "abort";
+  mission: string | null;
+  nonce: number;
+  attempts: number;
+}
+
+export interface RadioLastCommand {
   command: string;
+  mission_code: number;
+  nonce: number;
+  attempts: number;
+  acked: boolean;
+  result: number | null;
+  reason: string | null;
+  time: string;
 }
 
-// The operator command surface is exactly these two -- see
-// custom-gcs/CLAUDE.md Important Constraints #1. Do not widen this type.
-export type Command = "start" | "abort";
-
-// -- Multi-mission framework -- mirrors gcs/backend/app/missions.py's
-// MissionDefinition/ScenarioDefinition (registry) and
-// gcs/backend/app/schemas.py's FlightTestStatusResponse/
-// MultiStepFlightTestStatusResponse/MissionStartResponse. A "mission" is
-// a top-level choice (Main NIDAR Competition vs. Flight Test); a
-// "scenario" is one runnable case within a mission. This is metadata/
-// selection only -- it does not widen the Command union above;
-// mission-start goes through postMissionStart(), a separate call, same
-// way SimulationCommand stays separate from Command. Gated entirely
-// behind MissionSelectPanel.tsx (VITE_ENABLE_MISSION_SELECT) -- see
-// custom-gcs/CLAUDE.md Important Constraint #1.
-export interface Scenario {
-  id: string;
-  name: string;
-  description: string;
-  implemented: boolean;
-  execution_config: Record<string, number | string>;
-  steps: string[];
+export interface RadioStatusResponse {
+  enabled: boolean;
+  port: string | null;
+  baud: number | null;
+  port_open: boolean;
+  port_error: string | null;
+  jetson_link_up: boolean;
+  jetson_heartbeat_age_s: number | null;
+  jetson_mission_state: string | null;
+  // Which mission that state belongs to ("hover", "motor_test"); null = unknown.
+  jetson_mission?: string | null;
+  last_command: RadioLastCommand | null;
 }
 
+// The Mission dropdown -- mirrors gcs/backend/app/missions.py. Choosing a
+// mission is configuration, not an operator command.
 export interface Mission {
   id: string;
   name: string;
   description: string;
-  ui_panel: "nidar" | "flight_test" | string;
-  required_nodes: string[];
-  scenarios: Scenario[];
 }
 
-// execution_mode is always "mock" for now -- render it honestly, never
-// imply real flight. Status readback for the single-shot "hover"
-// scenario (hover_test_node) only -- see MultiStepFlightTestStatusResponse
-// below for the two multi-step scenarios' separate status topic/type.
+// /flight_test/status -- published by the real hover mission on the
+// Jetson (execution_mode "real"). Arrives over the radio.
 export interface FlightTestStatusResponse {
   scenario: string | null;
-  state: "idle" | "arming" | "taking_off" | "hovering" | "landing" | "complete" | "aborted" | null;
+  state: string | null;
   target_altitude_m: number | null;
   current_altitude_m: number | null;
   current_position: [number, number, number] | null;
@@ -285,6 +330,8 @@ export interface FlightTestStatusResponse {
   elapsed_hover_s: number | null;
   armed: boolean | null;
   execution_mode: string | null;
+  detail: string | null;
+  flight_mode: string | null;
 }
 
 // Status readback for the two multi-step flight-test scenarios
@@ -303,12 +350,6 @@ export interface MultiStepFlightTestStatusResponse {
   current_position: [number, number, number] | null;
   armed: boolean | null;
   execution_mode: string | null;
-}
-
-export interface MissionStartResponse {
-  status: string;
-  mission: string;
-  scenario: string;
 }
 
 // -- Simulation ("RUN SIMULATION") -- completely separate from the real
@@ -341,5 +382,41 @@ export interface SimulationStatusResponse {
 }
 
 // The simulation control surface is exactly these two -- never
-// "start"/"abort" (that vocabulary stays exclusive to Command above).
+// "start"/"abort" (that vocabulary stays exclusive to the real command path above).
 export type SimulationCommand = "run" | "reset";
+
+// Bench Setup page: a Pixhawk parameter as read back from the FCU.
+export interface ParamResponse {
+  name: string;
+  value: number;
+  attempts: number;
+}
+
+// Live LiDAR sectors (radio OBSTACLE_DISTANCE from the Jetson). Angles
+// clockwise from the nose; null = no return in that sector.
+export interface LidarResponse {
+  available: boolean;
+  age_s: number | null;
+  angle_offset_deg: number;
+  increment_deg: number;
+  min_cm: number | null;
+  max_cm: number | null;
+  distances_cm: (number | null)[];
+}
+
+// /api/components: every drone part the GCS hears from over the radio.
+// "ok" = its data keeps arriving, "lost" = it stopped, "missing" = never heard.
+export type ComponentState = "ok" | "lost" | "missing";
+
+export interface ComponentStatus {
+  key: string;
+  name: string;
+  status: ComponentState;
+  age_s: number | null;
+  detail: string | null;
+}
+
+export interface ComponentsResponse {
+  available: boolean;
+  components: ComponentStatus[];
+}

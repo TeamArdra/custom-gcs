@@ -21,6 +21,9 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+TELEMETRY_SOURCES = ("radio", "rosbridge")
+
+
 @dataclass(frozen=True)
 class Settings:
     rosbridge_host: str = os.environ.get("ROSBRIDGE_HOST", "127.0.0.1")
@@ -44,6 +47,28 @@ class Settings:
     # part of rosbridge (see docs/DECISIONS.md D-6, docs/DATA_MODELS.md
     # §7); this backend never proxies video bytes, only builds the URL.
     camera_stream_port: int = int(os.environ.get("CAMERA_STREAM_PORT", "8090"))
+    # The MicroLR900 command radio (START/ABORT path -- see app/radio_link.py).
+    # GCS_RADIO_PORT is the laptop's COM port for the radio (check Device
+    # Manager > Ports); baud must match the radio's USB baud.
+    radio_enabled: bool = _env_bool("GCS_RADIO_ENABLED", True)
+    radio_port: str = os.environ.get("GCS_RADIO_PORT", "COM5")
+    radio_baud: int = int(os.environ.get("GCS_RADIO_BAUD", "115200"))
+    # Where telemetry comes from. "radio" (default): over the MicroLR900
+    # radio from the Jetson's radio_command_node (app/radio_telemetry.py) --
+    # there is no Wi-Fi link on the drone. "rosbridge": the old Wi-Fi path
+    # (app/ros_client.py), still used with sim/rosbridge_sim for development.
+    telemetry_source: str = os.environ.get("GCS_TELEMETRY_SOURCE", "radio").strip().lower()
+    # Bench Setup page (read/write Pixhawk parameters over the radio). OFF by
+    # default: the operator command surface in a mission is exactly START
+    # and ABORT (CLAUDE.md Important Constraint 1), so the setup routes are
+    # not even created unless this is set (start_gcs.ps1 -Setup).
+    setup_enabled: bool = _env_bool("GCS_SETUP_ENABLED", False)
+
+    def __post_init__(self) -> None:
+        if self.telemetry_source not in TELEMETRY_SOURCES:
+            raise ValueError(
+                f"GCS_TELEMETRY_SOURCE must be one of {TELEMETRY_SOURCES}, got {self.telemetry_source!r}"
+            )
 
     def camera_stream_url(self) -> str:
         """Assumes the video server is co-located with the rosbridge host

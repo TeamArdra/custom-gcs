@@ -110,3 +110,77 @@ class FakeRosBridgeClient:
         if self._publish_mission_select_exception is not None:
             raise self._publish_mission_select_exception
         self.published_mission_selects.append((mission_id, scenario_id))
+
+
+class FakeRadioLink:
+    """Test double for app/radio_link.RadioLink -- records commands instead
+    of writing to a serial port, and answers with a configurable Jetson
+    response (accepted by default)."""
+
+    def __init__(self) -> None:
+        from app.radio_link import RadioResult, RadioUnavailable
+
+        self._result_cls = RadioResult
+        self._unavailable_cls = RadioUnavailable
+        self.sent: list[tuple[str, int]] = []
+        self.acked = True
+        self.result = 0  # MAV_RESULT_ACCEPTED
+        self.reason = "OK"
+        self.unavailable: str | None = None
+        self.started = False
+        self.stopped = False
+        self.params: dict[str, float] = {}
+        self.param_calls: list = []
+        self.param_reply = None  # a ParamResult to return instead (refusal / timeout tests)
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def read_param(self, name: str):
+        from app.radio_link import ParamResult
+
+        if self.unavailable is not None:
+            raise self._unavailable_cls(self.unavailable)
+        self.param_calls.append(("read", name, None))
+        return self.param_reply or ParamResult(name=name, replied=True, value=self.params.get(name, 0.0), attempts=1)
+
+    def set_param(self, name: str, value: float):
+        from app.radio_link import ParamResult
+
+        if self.unavailable is not None:
+            raise self._unavailable_cls(self.unavailable)
+        self.param_calls.append(("set", name, value))
+        if self.param_reply is not None:
+            return self.param_reply
+        self.params[name] = value
+        return ParamResult(name=name, replied=True, value=value, attempts=1)
+
+    def send_command(self, command: str, mission_code: int = 0):
+        if self.unavailable is not None:
+            raise self._unavailable_cls(self.unavailable)
+        self.sent.append((command, mission_code))
+        return self._result_cls(
+            command=command,
+            mission_code=mission_code,
+            nonce=1234,
+            attempts=1 if self.acked else 5,
+            acked=self.acked,
+            result=self.result if self.acked else None,
+            reason=self.reason if self.acked else None,
+        )
+
+    def status(self) -> dict:
+        return {
+            "enabled": True,
+            "port": "COM_TEST",
+            "baud": 115200,
+            "port_open": True,
+            "port_error": None,
+            "jetson_link_up": True,
+            "jetson_heartbeat_age_s": 0.4,
+            "jetson_mission_state": "idle",
+            "last_command": None,
+        }

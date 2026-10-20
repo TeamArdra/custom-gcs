@@ -5,19 +5,21 @@
 
 import type {
   CameraStatusResponse,
-  CommandResponse,
-  Command,
+  ComponentsResponse,
   CoverageResponse,
   FlightTestStatusResponse,
   FrontiersResponse,
   HealthResponse,
+  LidarResponse,
   MapResponse,
   Mission,
-  MissionStartResponse,
   MultiStepFlightTestStatusResponse,
+  ParamResponse,
   PathResponse,
   PerceptionDetectionsResponse,
   PerceptionStatusResponse,
+  RadioCommandResponse,
+  RadioStatusResponse,
   SimulationCommand,
   SimulationCommandResponse,
   SimulationStatusResponse,
@@ -56,6 +58,14 @@ export function getTelemetry(): Promise<TelemetryResponse> {
   return getJson<TelemetryResponse>("/api/telemetry");
 }
 
+export function getLidar(): Promise<LidarResponse> {
+  return getJson<LidarResponse>("/api/lidar");
+}
+
+export function getComponents(): Promise<ComponentsResponse> {
+  return getJson<ComponentsResponse>("/api/components");
+}
+
 export function getMap(): Promise<MapResponse> {
   return getJson<MapResponse>("/api/map");
 }
@@ -90,13 +100,8 @@ export function getCameraStatus(): Promise<CameraStatusResponse> {
   return getJson<CameraStatusResponse>("/api/camera/status");
 }
 
-// -- Multi-mission framework -- gated entirely behind
-// MissionSelectPanel.tsx (VITE_ENABLE_MISSION_SELECT), see App.tsx and
-// custom-gcs/CLAUDE.md Important Constraint #1. These calls are metadata/
-// selection only, mirroring gcs/backend/app/missions.py's registry --
-// postMissionStart() below still only ever results in the same "start"
-// postCommand("start") already sends, parameterized with which mission
-// profile it applies to.
+// -- Missions -- the Mission dropdown (gcs/backend/app/missions.py) and the
+// hover mission's status. Read-only; START itself is postMissionStart().
 
 export function getMissions(): Promise<Mission[]> {
   return getJson<Mission[]>("/api/missions");
@@ -114,18 +119,19 @@ export function getMultiStepFlightTestStatus(): Promise<MultiStepFlightTestStatu
   return getJson<MultiStepFlightTestStatusResponse>("/api/flight-test/multi-step/status");
 }
 
-// Bounded so a hung/slow request (backend or rosbridge stall) can't hold
-// a command button's busy state open indefinitely -- a stuck START must
-// never be able to delay the operator's ability to send ABORT. See
-// docs/DECISIONS.md D-10 and onboard-autonomy/CLAUDE.md Hard Safety Rule 2.
+// Bounded so a hung/slow request can't hold a command button's busy state
+// open indefinitely -- a stuck START must never be able to delay the
+// operator's ability to send ABORT. Covers the backend's radio retries
+// (app/radio_link.py: 5 x 0.6 s). See docs/DECISIONS.md D-10 and
+// onboard-autonomy/CLAUDE.md Hard Safety Rule 2.
 const COMMAND_TIMEOUT_MS = 5000;
 
-// ABORT gets its own, much shorter bound. Per onboard-autonomy/CLAUDE.md
-// Hard Safety Rule 2, abort is the single most safety-critical behaviour
-// in the system, and the operator's fallback if the software path fails
-// is the physical kill switch -- so a hung ABORT must surface as "use the
-// kill switch" well before a hung START would ever time out.
-const ABORT_TIMEOUT_MS = 1500;
+// ABORT gets its own, shorter bound. Per onboard-autonomy/CLAUDE.md Hard
+// Safety Rule 2, abort is the single most safety-critical behaviour in the
+// system, and the operator's fallback if the software path fails is the RC
+// transmitter / kill switch -- so a hung ABORT must surface quickly. It
+// covers the backend's radio retries (app/radio_link.py: 5 x 0.4 s).
+const ABORT_TIMEOUT_MS = 3000;
 
 async function postAction<T>(path: string, timeoutMs: number): Promise<T> {
   const controller = new AbortController();
@@ -148,17 +154,19 @@ async function postAction<T>(path: string, timeoutMs: number): Promise<T> {
   return (await res.json()) as T;
 }
 
-export function postCommand(cmd: Command): Promise<CommandResponse> {
-  const timeoutMs = cmd === "abort" ? ABORT_TIMEOUT_MS : COMMAND_TIMEOUT_MS;
-  return postAction<CommandResponse>(`/api/command/${cmd}`, timeoutMs);
+// ABORT over the command radio. Resolves only if the Jetson accepted it.
+export function postAbort(): Promise<RadioCommandResponse> {
+  return postAction<RadioCommandResponse>("/api/command/abort", ABORT_TIMEOUT_MS);
+}
+
+export function getRadioStatus(): Promise<RadioStatusResponse> {
+  return getJson<RadioStatusResponse>("/api/radio/status");
 }
 
 // Same bounded-timeout/error-detail behavior as postAction() above, but
 // for the one POST route in this file that needs a JSON body
-// (/api/mission/start's {mission, scenario} -- see
-// gcs/backend/app/schemas.py's MissionStartRequest). Ordinary
-// COMMAND_TIMEOUT_MS bound, not ABORT_TIMEOUT_MS -- mission-start is not
-// the safety-critical abort path.
+// (/api/mission/start's {mission} -- see gcs/backend/app/schemas.py's
+// MissionStartRequest).
 async function postJson<T>(path: string, body: unknown, timeoutMs: number): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -185,8 +193,10 @@ async function postJson<T>(path: string, body: unknown, timeoutMs: number): Prom
   return (await res.json()) as T;
 }
 
-export function postMissionStart(mission: string, scenario: string): Promise<MissionStartResponse> {
-  return postJson<MissionStartResponse>("/api/mission/start", { mission, scenario }, COMMAND_TIMEOUT_MS);
+// START for the selected mission, over the command radio. Resolves only if
+// the Jetson ACKed and accepted it.
+export function postMissionStart(mission: string): Promise<RadioCommandResponse> {
+  return postJson<RadioCommandResponse>("/api/mission/start", { mission }, COMMAND_TIMEOUT_MS);
 }
 
 // Simulation control -- see api.ts's module comment and
@@ -215,4 +225,23 @@ export function getSimulationCoverage(): Promise<CoverageResponse> {
 
 export function getSimulationPath(): Promise<PathResponse> {
   return getJson<PathResponse>("/api/simulation/path");
+}
+
+// -- Bench Setup page (only when the backend runs with GCS_SETUP_ENABLED) --
+// A parameter request can take several radio round trips plus the FCU
+// write, so the timeout is generous.
+const PARAM_TIMEOUT_MS = 10000;
+
+export async function getParam(name: string): Promise<ParamResponse> {
+  const path = `/api/setup/param/${encodeURIComponent(name)}`;
+  const res = await fetch(path);
+  if (!res.ok) {
+    const detail = await extractErrorDetail(res);
+    throw new Error(detail ?? `GET ${path} failed: HTTP ${res.status}`);
+  }
+  return (await res.json()) as ParamResponse;
+}
+
+export function setParam(name: string, value: number): Promise<ParamResponse> {
+  return postJson<ParamResponse>("/api/setup/param", { name, value }, PARAM_TIMEOUT_MS);
 }

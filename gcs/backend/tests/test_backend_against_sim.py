@@ -72,7 +72,9 @@ def sim_process():
 
 
 def test_full_stack_health_start_and_telemetry_round_trip(sim_process):
-    settings = Settings(rosbridge_host="127.0.0.1", rosbridge_port=TEST_PORT, connect_timeout_s=5.0)
+    settings = Settings(
+        rosbridge_host="127.0.0.1", rosbridge_port=TEST_PORT, connect_timeout_s=5.0, telemetry_source="rosbridge"
+    )
     app = create_app(settings=settings)
 
     with TestClient(app) as client:  # runs the real lifespan -> real roslibpy connect
@@ -90,9 +92,20 @@ def test_full_stack_health_start_and_telemetry_round_trip(sim_process):
             time.sleep(0.1)
         assert telemetry["mission_state"] == "idle"
 
-        start_resp = client.post("/api/command/start")
-        assert start_resp.status_code == 200
-        assert start_resp.json() == {"status": "sent", "command": "start"}
+        # START/ABORT no longer travel over rosbridge (they go over the
+        # command radio -- app/radio_link.py), so the backend has no Wi-Fi
+        # START at all. Drive the sim's mission the way the Jetson's radio
+        # node would, by publishing /gcs/command on the sim directly; this
+        # test is about telemetry flowing back through the real backend.
+        assert client.post("/api/command/start").status_code in (404, 405)
+        import roslibpy
+
+        ros = roslibpy.Ros(host=settings.rosbridge_host, port=settings.rosbridge_port)
+        ros.run(timeout=5)
+        command_topic = roslibpy.Topic(ros, "/gcs/command", "std_msgs/String")
+        command_topic.advertise()
+        time.sleep(0.2)
+        command_topic.publish(roslibpy.Message({"data": "start"}))
 
         deadline = time.monotonic() + 3
         state = telemetry.get("mission_state")
@@ -109,8 +122,7 @@ def test_full_stack_health_start_and_telemetry_round_trip(sim_process):
         assert len(survivors) == 1
         assert survivors[0]["survivor_id"] == 1
 
-        abort_resp = client.post("/api/command/abort")
-        assert abort_resp.status_code == 200
+        command_topic.publish(roslibpy.Message({"data": "abort"}))
 
         deadline = time.monotonic() + 3
         state = None
@@ -118,3 +130,5 @@ def test_full_stack_health_start_and_telemetry_round_trip(sim_process):
             state = client.get("/api/telemetry").json()["mission_state"]
             time.sleep(0.1)
         assert state == "aborted"
+        command_topic.unadvertise()
+        ros.terminate()

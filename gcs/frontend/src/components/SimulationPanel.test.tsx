@@ -53,12 +53,13 @@ describe("SimulationPanel", () => {
     await waitFor(() => expect(api.getSimulationStatus).toHaveBeenCalled());
   });
 
-  it("RUN SIMULATION calls postSimulationCommand('run'), never postCommand", async () => {
+  it("RUN SIMULATION calls postSimulationCommand('run'), never the real START/ABORT", async () => {
     mockSimulationApis();
     const postSimSpy = vi
       .spyOn(api, "postSimulationCommand")
       .mockResolvedValue({ status: "sent", command: "run" });
-    const postCommandSpy = vi.spyOn(api, "postCommand");
+    const startSpy = vi.spyOn(api, "postMissionStart");
+    const abortSpy = vi.spyOn(api, "postAbort");
 
     render(<SimulationPanel />);
     await act(async () => {
@@ -66,7 +67,8 @@ describe("SimulationPanel", () => {
     });
 
     expect(postSimSpy).toHaveBeenCalledWith("run");
-    expect(postCommandSpy).not.toHaveBeenCalled();
+    expect(startSpy).not.toHaveBeenCalled();
+    expect(abortSpy).not.toHaveBeenCalled();
   });
 
   it("RESET calls postSimulationCommand('reset')", async () => {

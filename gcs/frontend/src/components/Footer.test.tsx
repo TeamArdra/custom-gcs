@@ -65,6 +65,21 @@ describe("Footer", () => {
     expect(label.closest("span")?.className).toMatch(/text-warn/);
   });
 
+  it("names the command radio as the telemetry source when the backend uses it", async () => {
+    vi.spyOn(api, "getHealth").mockResolvedValue({
+      connected: true,
+      ros_status: "disabled",
+      telemetry_source: "radio",
+      rosbridge_host: "127.0.0.1",
+      rosbridge_port: 9090,
+    });
+
+    render(<Footer />);
+
+    expect(await screen.findByText(/telemetry: MicroLR900 command radio/)).toBeInTheDocument();
+    expect(screen.queryByText(/ROS disabled/)).not.toBeInTheDocument();
+  });
+
   it("falls back to 'unknown' for both target and ROS status if the health fetch fails", async () => {
     vi.spyOn(api, "getHealth").mockRejectedValue(new Error("network error"));
 

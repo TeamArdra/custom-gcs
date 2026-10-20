@@ -2,13 +2,19 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 
-from .fakes import FakeRosBridgeClient
+from .fakes import FakeRadioLink, FakeRosBridgeClient
 
 
 def make_client() -> tuple[TestClient, FakeRosBridgeClient]:
     fake = FakeRosBridgeClient()
     app = create_app(client=fake)
     return TestClient(app), fake
+
+
+def make_radio_client() -> tuple[TestClient, FakeRosBridgeClient, FakeRadioLink]:
+    fake = FakeRosBridgeClient()
+    radio = FakeRadioLink()
+    return TestClient(create_app(client=fake, radio=radio)), fake, radio
 
 
 def test_health_reports_connection_state():
@@ -108,7 +114,7 @@ def test_map_snapshot_flattens_occupancy_grid():
 def test_map_snapshot_before_any_map_received():
     client, _ = make_client()
     body = client.get("/api/map").json()
-    assert body == {"resolution": None, "width": None, "height": None, "data": None}
+    assert body == {"resolution": None, "width": None, "height": None, "data": None, "origin_x": None, "origin_y": None, "robot": None, "age_s": None, "arena": None}
 
 
 def test_coverage_snapshot_flattens_occupancy_grid():
@@ -488,76 +494,106 @@ def test_camera_status_malformed_upstream_field_type_degrades_to_defaults():
     }
 
 
-def test_start_command_publishes_start_and_only_start():
-    client, fake = make_client()
-    resp = client.post("/api/command/start")
+def test_hover_start_goes_over_the_radio_with_mission_code_not_over_rosbridge():
+    client, fake, radio = make_radio_client()
+    resp = client.post("/api/mission/start", json={"mission": "hover"})
     assert resp.status_code == 200
-    assert resp.json() == {"status": "sent", "command": "start"}
-    assert fake.published_commands == ["start"]
+    assert resp.json() == {
+        "status": "accepted", "command": "start", "mission": "hover", "nonce": 1234, "attempts": 1,
+    }
+    assert radio.sent == [("start", 1)]
+    assert fake.published_commands == []
+    assert fake.published_mission_selects == []
 
 
-def test_abort_command_publishes_abort_and_only_abort():
-    client, fake = make_client()
-    resp = client.post("/api/command/abort")
+def test_motor_test_start_goes_over_the_radio_with_its_own_code():
+    client, fake, radio = make_radio_client()
+    resp = client.post("/api/mission/start", json={"mission": "motor_test"})
     assert resp.status_code == 200
-    assert resp.json() == {"status": "sent", "command": "abort"}
-    assert fake.published_commands == ["abort"]
-
-
-def test_start_command_reports_sent_even_when_ros_client_reports_disconnected():
-    """Pins the API's actual current contract, not a desired one: the
-    route never checks `ros_client.is_connected` before calling
-    `publish_command()` (see app/main.py:start_mission/abort_mission), so
-    a disconnected-but-not-yet-raising client still gets a 200 "sent"
-    response. This means the operator cannot distinguish "the drone
-    received this command" from "the backend merely accepted the HTTP
-    request" from this response alone -- see docs/COMMUNICATION.md's note
-    that /gcs/command has no defined ack semantics yet (D-10). If a future
-    change adds a pre-publish connectivity check, this test's expected
-    response should change to match the new documented contract -- don't
-    leave it passing on a stale assumption."""
-    client, fake = make_client()
-    fake.is_connected = False
-
-    resp = client.post("/api/command/start")
-
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "sent", "command": "start"}
-    assert fake.published_commands == ["start"]
-
-
-def test_command_route_surfaces_a_structured_503_when_the_downstream_publish_fails():
-    """Exercises the one error path publish_command can actually raise in
-    production: RuntimeError("not connected to rosbridge") when the
-    RosBridgeClient was never connected (see app/ros_client.py). Both
-    routes now wrap ros_client.publish_command() in a try/except that
-    re-raises as fastapi.HTTPException(503, ...), so the operator gets a
-    structured, actionable {"detail": ...} body distinguishing "not
-    connected to the drone" from any other server-side bug, instead of an
-    opaque bare 500 (see docs/DECISIONS.md D-10 on abort reliability)."""
-    fake = FakeRosBridgeClient()
-    fake.fail_publish_with(RuntimeError("not connected to rosbridge"))
-    app = create_app(client=fake)
-    client = TestClient(app)
-
-    resp = client.post("/api/command/abort")
-
-    assert resp.status_code == 503
-    assert "not connected to rosbridge" in resp.json()["detail"]
+    assert resp.json()["mission"] == "motor_test"
+    assert radio.sent == [("start", 2)]
     assert fake.published_commands == []
 
 
-def test_start_command_also_surfaces_a_structured_503_when_disconnected():
-    fake = FakeRosBridgeClient()
-    fake.fail_publish_with(RuntimeError("not connected to rosbridge"))
-    app = create_app(client=fake)
-    client = TestClient(app)
-
-    resp = client.post("/api/command/start")
-
-    assert resp.status_code == 503
-    assert "not connected to rosbridge" in resp.json()["detail"]
+def test_abort_goes_over_the_radio_not_over_rosbridge():
+    client, fake, radio = make_radio_client()
+    resp = client.post("/api/command/abort")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "accepted"
+    assert resp.json()["command"] == "abort"
+    assert radio.sent == [("abort", 0)]
     assert fake.published_commands == []
+
+
+def test_there_is_no_mission_less_start_route():
+    client, _, radio = make_radio_client()
+    assert client.post("/api/command/start").status_code in (404, 405)
+    assert radio.sent == []
+
+
+def test_start_without_an_ack_is_a_504_never_success():
+    client, _, radio = make_radio_client()
+    radio.acked = False
+    resp = client.post("/api/mission/start", json={"mission": "hover"})
+    assert resp.status_code == 504
+    assert "never acknowledged" in resp.json()["detail"]
+
+
+def test_start_rejected_by_the_jetson_is_a_409_with_the_reason():
+    client, _, radio = make_radio_client()
+    radio.result = 1
+    radio.reason = "FCU_NOT_CONNECTED"
+    resp = client.post("/api/mission/start", json={"mission": "hover"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Jetson REJECTED START: FCU_NOT_CONNECTED"
+
+
+def test_abort_without_an_ack_is_a_504():
+    client, _, radio = make_radio_client()
+    radio.acked = False
+    assert client.post("/api/command/abort").status_code == 504
+
+
+def test_radio_port_unavailable_is_a_503_and_nothing_is_claimed_sent():
+    client, _, radio = make_radio_client()
+    radio.unavailable = "radio port COM5 is not open (could not open port)"
+    for resp in (client.post("/api/mission/start", json={"mission": "hover"}), client.post("/api/command/abort")):
+        assert resp.status_code == 503
+        assert "not sent" in resp.json()["detail"]
+    assert radio.sent == []
+
+
+def test_unknown_mission_404s_and_sends_nothing():
+    client, _, radio = make_radio_client()
+    resp = client.post("/api/mission/start", json={"mission": "main_nidar"})
+    assert resp.status_code == 404
+    assert radio.sent == []
+
+
+def test_radio_status_route():
+    client, _, _ = make_radio_client()
+    body = client.get("/api/radio/status").json()
+    assert body["port_open"] is True
+    assert body["jetson_link_up"] is True
+    assert body["jetson_mission_state"] == "idle"
+
+
+def test_radio_link_is_started_and_stopped_with_the_app():
+    radio = FakeRadioLink()
+    with TestClient(create_app(client=FakeRosBridgeClient(), radio=radio)):
+        pass
+    assert not radio.started  # an injected radio is owned by the caller
+    owned = FakeRadioLink()
+    import app.main as main_module
+
+    original = main_module.RadioLink
+    main_module.RadioLink = lambda *a, **k: owned
+    try:
+        with TestClient(create_app(client=FakeRosBridgeClient())):
+            assert owned.started
+        assert owned.stopped
+    finally:
+        main_module.RadioLink = original
 
 
 def test_get_requests_never_mutate_command_state():
@@ -610,59 +646,24 @@ def test_no_route_exists_beyond_the_documented_command_surface():
         assert client.put(path).status_code == 404
 
 
-def test_list_missions_returns_both_missions_with_correct_shape():
+def test_list_missions_returns_hover_and_motor_test():
     client, _ = make_client()
     body = client.get("/api/missions").json()
-
-    assert len(body) == 2
-    ids = {m["id"] for m in body}
-    assert ids == {"main_nidar", "flight_test"}
-    main_nidar = next(m for m in body if m["id"] == "main_nidar")
-    assert main_nidar["ui_panel"] == "nidar"
-    assert len(main_nidar["scenarios"]) == 1
-    flight_test = next(m for m in body if m["id"] == "flight_test")
-    assert flight_test["ui_panel"] == "flight_test"
-    assert len(flight_test["scenarios"]) == 3
+    assert [m["id"] for m in body] == ["hover", "motor_test"]
+    assert [m["name"] for m in body] == ["Hover", "Motor Test"]
 
 
-def test_get_mission_detail_for_known_missions():
+def test_get_mission_detail_for_hover():
     client, _ = make_client()
-
-    main_nidar = client.get("/api/missions/main_nidar")
-    assert main_nidar.status_code == 200
-    assert main_nidar.json()["id"] == "main_nidar"
-
-    flight_test = client.get("/api/missions/flight_test")
-    assert flight_test.status_code == 200
-    assert flight_test.json()["id"] == "flight_test"
+    resp = client.get("/api/missions/hover")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "hover"
 
 
 def test_get_mission_detail_unknown_mission_404s():
     client, _ = make_client()
     resp = client.get("/api/missions/bogus")
     assert resp.status_code == 404
-
-
-def test_get_mission_scenario_list_returns_three_scenarios_all_implemented():
-    """No "coming soon" placeholder scenarios -- a scenario is only in the
-    registry (and therefore only ever offered by this endpoint) once it's
-    actually implemented; see app/missions.py."""
-    client, _ = make_client()
-    body = client.get("/api/missions/flight_test/scenarios").json()
-
-    assert len(body) == 3
-    assert all(s["implemented"] is True for s in body)
-    assert {s["id"] for s in body} == {"hover", "forward_backward_hover", "sideways_hover_sideways_hover"}
-
-
-def test_get_mission_scenario_list_includes_steps():
-    client, _ = make_client()
-    body = client.get("/api/missions/flight_test/scenarios").json()
-
-    by_id = {s["id"]: s for s in body}
-    assert by_id["forward_backward_hover"]["steps"] == ["forward", "backward", "hover"]
-    assert by_id["sideways_hover_sideways_hover"]["steps"] == ["sideways", "hover", "sideways", "hover"]
-    assert by_id["hover"]["steps"] == ["takeoff", "hover", "land"]
 
 
 def test_flight_test_status_before_any_data_arrives():
@@ -678,6 +679,8 @@ def test_flight_test_status_before_any_data_arrives():
         "elapsed_hover_s": None,
         "armed": None,
         "execution_mode": None,
+        "detail": None,
+        "flight_mode": None,
     }
 
 
@@ -731,6 +734,8 @@ def test_flight_test_status_malformed_upstream_field_type_degrades_to_defaults()
         "elapsed_hover_s": None,
         "armed": None,
         "execution_mode": None,
+        "detail": None,
+        "flight_mode": None,
     }
 
 
@@ -811,153 +816,15 @@ def test_multi_step_flight_test_status_malformed_upstream_field_type_degrades_to
     }
 
 
-def test_mission_start_publishes_mission_select_then_start_in_order():
-    client, fake = make_client()
-    resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "hover"})
-
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "sent", "mission": "flight_test", "scenario": "hover"}
-    assert fake.published_mission_selects == [("flight_test", "hover")]
-    assert fake.published_commands == ["start"]
-
-
-def test_mission_start_works_for_both_new_multi_step_scenarios():
-    for scenario_id in ("forward_backward_hover", "sideways_hover_sideways_hover"):
-        client, fake = make_client()
-        resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": scenario_id})
-
-        assert resp.status_code == 200
-        assert resp.json() == {"status": "sent", "mission": "flight_test", "scenario": scenario_id}
-        assert fake.published_mission_selects == [("flight_test", scenario_id)]
-        assert fake.published_commands == ["start"]
-
-
-def test_mission_start_unknown_mission_404s_and_publishes_nothing():
-    client, fake = make_client()
-    resp = client.post("/api/mission/start", json={"mission": "bogus", "scenario": "hover"})
-
-    assert resp.status_code == 404
-    assert fake.published_mission_selects == []
-    assert fake.published_commands == []
-
-
-def test_mission_start_unknown_scenario_400s_and_publishes_nothing():
-    client, fake = make_client()
-    resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "bogus"})
-
-    assert resp.status_code == 400
-    assert fake.published_mission_selects == []
-    assert fake.published_commands == []
-
-
-def test_mission_start_not_implemented_scenario_400s_and_publishes_nothing(monkeypatch):
-    """The real registry (app/missions.py) no longer carries any
-    "implemented=False" placeholder scenario -- see
-    tests/test_missions.py -- so this exercises main.py's own
-    `if not scenario.implemented` guard directly via a temporary
-    monkeypatched registry entry, rather than relying on a permanent
-    placeholder scenario that shouldn't exist in production."""
-    from app.missions import MissionDefinition, ScenarioDefinition
-
-    import app.missions as missions_module
-
-    not_implemented = MissionDefinition(
-        id="flight_test", name="Flight Test", description="...", ui_panel="flight_test",
-        required_nodes=(),
-        scenarios=(
-            ScenarioDefinition(id="staged", name="Staged", description="...", implemented=False),
-        ),
-    )
-    monkeypatch.setattr(
-        missions_module, "MISSION_REGISTRY", (not_implemented,),
-    )
-
-    client, fake = make_client()
-    resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "staged"})
-
-    assert resp.status_code == 400
-    assert fake.published_mission_selects == []
-    assert fake.published_commands == []
-
-
-def test_mission_start_rejected_when_real_mission_already_active():
-    client, fake = make_client()
-    fake.set_latest("/mission/state", {"data": "entering"})
-
-    for mission, scenario in (("main_nidar", "full_mission"), ("flight_test", "hover")):
-        resp = client.post("/api/mission/start", json={"mission": mission, "scenario": scenario})
-        assert resp.status_code == 409
-
-    assert fake.published_mission_selects == []
-    assert fake.published_commands == []
-
-
-def test_mission_start_rejected_when_flight_test_already_active():
-    client, fake = make_client()
-    fake.set_flight_test_status({"state": "hovering"})
-
-    resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "hover"})
-
-    assert resp.status_code == 409
-    assert fake.published_mission_selects == []
-    assert fake.published_commands == []
-
-
-def test_mission_start_rejected_when_multi_step_scenario_already_active():
-    """Extends the 409 already-active guard to the second, separate
-    status topic (MULTI_STEP_TEST_STATUS_TOPIC) -- starting hover while a
-    multi-step scenario is mid-flight must be rejected too, even though
-    they're technically different ROS nodes/topics. See
-    app/ros_client.py's MULTI_STEP_TEST_STATUS_TOPIC docstring."""
-    client, fake = make_client()
-    fake.set_multi_step_flight_test_status({"state": "executing"})
-
-    resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "hover"})
-
-    assert resp.status_code == 409
-    assert fake.published_mission_selects == []
-    assert fake.published_commands == []
-
-
-def test_mission_start_allowed_when_multi_step_scenario_is_failed_or_aborted_or_complete():
-    for terminal_state in ("failed", "aborted", "complete", "idle", None):
-        client, fake = make_client()
-        if terminal_state is not None:
-            fake.set_multi_step_flight_test_status({"state": terminal_state})
-
-        resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "hover"})
-
-        assert resp.status_code == 200, f"expected start to succeed after multi-step state={terminal_state!r}"
-
-
-def test_command_start_and_abort_behave_completely_unchanged():
-    """Reuses the existing command/start/abort behavior verbatim -- the
-    fact these still pass unmodified alongside the new mission-aware
-    surface IS the proof /api/command/start and /api/command/abort were
-    not touched."""
-    client, fake = make_client()
-
-    resp = client.post("/api/command/start")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "sent", "command": "start"}
-    assert fake.published_commands == ["start"]
-
-    resp = client.post("/api/command/abort")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "sent", "command": "abort"}
-    assert fake.published_commands == ["start", "abort"]
-
-
-def test_new_mission_get_routes_never_publish_anything():
-    client, fake = make_client()
+def test_mission_get_routes_never_send_anything():
+    client, fake, radio = make_radio_client()
     for _ in range(3):
         client.get("/api/missions")
-        client.get("/api/missions/main_nidar")
-        client.get("/api/missions/flight_test/scenarios")
+        client.get("/api/missions/hover")
         client.get("/api/flight-test/status")
-        client.get("/api/flight-test/multi-step/status")
+        client.get("/api/radio/status")
+    assert radio.sent == []
     assert fake.published_commands == []
-    assert fake.published_mission_selects == []
 
 
 def test_main_source_contains_no_forbidden_command_surface_words():

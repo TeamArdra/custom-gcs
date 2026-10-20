@@ -282,6 +282,29 @@ by the drone-side topic table and needs a subscriber node on the Jetson
 side plus a latency test under realistic (video-present) link load before
 it can be considered done.
 
+**Update 2026-10-07 — transport:** the GCS no longer publishes this topic
+over rosbridge. START/ABORT travel over the MicroLR900 command radio to
+the Jetson, whose `radio_command_node` publishes `/gcs/command` (preceded,
+for START, by `/gcs/mission_select` `{"mission_id": "hover", "source":
+"radio", "nonce": n}`). The values are unchanged — still exactly
+`"start"`/`"abort"`. Radio wire format: [COMMUNICATION.md](COMMUNICATION.md) §6.
+
+Related status topics on the Jetson. **Update 2026-10-07:** there is no
+Wi-Fi/rosbridge link any more -- the GCS receives the hover status and the
+FCU telemetry relayed over the radio ([COMMUNICATION.md](COMMUNICATION.md)
+§6.1) and rebuilds `/flight_test/status` from it; `/radio/status` stays
+on the Jetson for local debugging.
+
+- `/flight_test/status` — the real hover mission's status (`std_msgs/String`
+  JSON, ~2 Hz): `scenario`, `state` (`idle`, `preflight`, `setting_guided`,
+  `arming`, `taking_off`, `hovering`, `landing`, `complete`, `aborted`,
+  `failed`, `pilot_override`), `detail`, `target_altitude_m`,
+  `current_altitude_m`, `current_position`, `duration_s`,
+  `elapsed_hover_s`, `armed`, `flight_mode`, `execution_mode` = `"real"`.
+- `/radio/status` — `radio_command_node` health (`std_msgs/String` JSON,
+  1 Hz): `serial_open`, `serial_port`, `last_rx_age_s`, `fcu_connected`,
+  `mission_alive`, `mission_state`, `last_command`, `dry_run`.
+
 ## 8A. Mission/Test Selection (Development) — `/gcs/mission_select`, `/flight_test/status`, `/flight_test/multi_step/status`
 
 **Added 2026-09-15, Mission/Test Selection and Execution System.**

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getHealth } from "../api";
-import type { RosStatus } from "../types";
+import type { HealthResponse, RosStatus } from "../types";
 
 // Human-readable labels for GET /health's ros_status -- see
 // gcs/backend/app/schemas.py's HealthResponse docstring and
@@ -21,6 +21,7 @@ const ROS_STATUS_LABEL: Record<RosStatus, string> = {
 // custom-gcs/docs/DECISIONS.md D-0's hardware-isolation seam note), so
 // this must not guess or label it "MOCK"/"REAL".
 export default function Footer() {
+  const [source, setSource] = useState<HealthResponse["telemetry_source"] | null>(null);
   const [target, setTarget] = useState<string | null>(null);
   const [rosStatus, setRosStatus] = useState<RosStatus | null>(null);
 
@@ -29,11 +30,13 @@ export default function Footer() {
     getHealth()
       .then((h) => {
         if (!mounted) return;
+        setSource(h.telemetry_source ?? "rosbridge");
         setTarget(`${h.rosbridge_host}:${h.rosbridge_port}`);
         setRosStatus(h.ros_status);
       })
       .catch(() => {
         if (!mounted) return;
+        setSource(null);
         setTarget(null);
         setRosStatus(null);
       });
@@ -41,6 +44,11 @@ export default function Footer() {
       mounted = false;
     };
   }, []);
+
+  if (source === "radio") {
+    // No ROS link on the GCS at all: everything comes over the command radio.
+    return <footer className="mt-4 text-dim text-[11px]">telemetry: MicroLR900 command radio (no Wi-Fi link)</footer>;
+  }
 
   return (
     <footer className="mt-4 text-dim text-[11px]">

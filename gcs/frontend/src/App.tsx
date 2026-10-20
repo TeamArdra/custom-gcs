@@ -1,10 +1,15 @@
+import { useEffect, useState } from "react";
+import { getHealth } from "./api";
 import { useTelemetry } from "./hooks/useTelemetry";
+import SetupPanel from "./components/SetupPanel";
 import ConnectionPanel from "./components/ConnectionPanel";
 import FlightPanel from "./components/FlightPanel";
 import MissionPanel from "./components/MissionPanel";
 import ControlsPanel from "./components/ControlsPanel";
 import BatteryPanel from "./components/BatteryPanel";
 import PositionVelocityPanel from "./components/PositionVelocityPanel";
+import GpsPanel from "./components/GpsPanel";
+import LidarPanel from "./components/LidarPanel";
 import AttitudePanel from "./components/AttitudePanel";
 import StatusTextPanel from "./components/StatusTextPanel";
 import MapPanel from "./components/MapPanel";
@@ -13,7 +18,6 @@ import SurvivorsPanel from "./components/SurvivorsPanel";
 import CameraPanel from "./components/CameraPanel";
 import PerceptionPanel from "./components/PerceptionPanel";
 import SimulationPanel from "./components/SimulationPanel";
-import MissionSelectPanel from "./components/MissionSelectPanel";
 import Footer from "./components/Footer";
 
 export default function App() {
@@ -33,16 +37,20 @@ export default function App() {
   // environment at render time, not just at first import.
   const simulationEnabled = import.meta.env.VITE_ENABLE_SIMULATION === "true";
 
-  // Same gating rationale/pattern as simulationEnabled above, a SEPARATE
-  // flag (never reuse VITE_ENABLE_SIMULATION, a different concern) --
-  // this panel is an additional, alternate, explicitly-gated way to
-  // start a mission with a specific mission_id/scenario_id (dev/bench
-  // test-scenario selection), not a replacement for the real
-  // ControlsPanel START, which stays exactly as-is regardless of this
-  // flag. Opt in explicitly for local development/testing:
-  //   VITE_ENABLE_MISSION_SELECT=true npm run dev
-  // Never set this for a competition build.
-  const missionSelectEnabled = import.meta.env.VITE_ENABLE_MISSION_SELECT === "true";
+  // Bench Setup section: shown only when the backend itself was started for
+  // setup (start_gcs.ps1 -Setup) -- its routes don't exist otherwise.
+  const [setupEnabled, setSetupEnabled] = useState(false);
+  // "mission" = the operator panels; "setup" = Pixhawk parameters (setup mode only).
+  const [view, setView] = useState<"mission" | "setup">("mission");
+  useEffect(() => {
+    let mounted = true;
+    getHealth()
+      .then((h) => mounted && setSetupEnabled(Boolean(h.setup_enabled)))
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const subtitle = error
     ? `telemetry fetch failed: ${error}`
@@ -57,13 +65,55 @@ export default function App() {
         {subtitle}
       </div>
 
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
+      {setupEnabled && (
+        <div role="tablist" aria-label="View" className="flex gap-1 mb-3 border-b border-border">
+          {(
+            [
+              ["mission", "Mission"],
+              ["setup", "Setup: Pixhawk parameters"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={view === id}
+              className={`px-3 py-1.5 text-sm rounded-t-md border border-b-0 ${
+                view === id ? "bg-panel border-border text-text font-semibold" : "border-transparent text-dim hover:text-text"
+              }`}
+              onClick={() => setView(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {setupEnabled && view === "setup" && (
+        <>
+          <div className="mb-2 text-xs uppercase tracking-wide text-warn font-semibold">
+            Bench setup — not for missions. The Jetson refuses writes while armed or while a mission runs.
+          </div>
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
+            <SetupPanel />
+          </div>
+        </>
+      )}
+
+      {/* The mission panels stay mounted on the Setup tab (only hidden), so
+          Mission Control keeps polling and START/ABORT stay one click away. */}
+      <div
+        data-testid="mission-panels"
+        className={view === "mission" ? "grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3" : "hidden"}
+      >
         <ConnectionPanel telemetry={telemetry} />
         <FlightPanel telemetry={telemetry} />
         <MissionPanel telemetry={telemetry} />
-        <ControlsPanel />
+        <ControlsPanel telemetry={telemetry} />
         <BatteryPanel telemetry={telemetry} />
         <PositionVelocityPanel telemetry={telemetry} />
+        <LidarPanel />
+        <GpsPanel telemetry={telemetry} />
         <AttitudePanel telemetry={telemetry} />
         <AutonomyPanel telemetry={telemetry} />
         <SurvivorsPanel />
@@ -73,6 +123,7 @@ export default function App() {
         <CameraPanel />
       </div>
 
+
       {simulationEnabled && (
         <>
           <div className="mt-6 mb-2 text-xs uppercase tracking-wide text-violet-400 font-semibold">
@@ -80,17 +131,6 @@ export default function App() {
           </div>
           <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
             <SimulationPanel />
-          </div>
-        </>
-      )}
-
-      {missionSelectEnabled && (
-        <>
-          <div className="mt-6 mb-2 text-xs uppercase tracking-wide text-accent font-semibold">
-            Mission / Test Select — dev/bench-only alternate start path
-          </div>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
-            <MissionSelectPanel telemetry={telemetry} />
           </div>
         </>
       )}

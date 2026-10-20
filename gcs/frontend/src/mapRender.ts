@@ -4,7 +4,8 @@
 // duplicating the drawing logic. Two callers, one renderer -- the
 // simulation is a consumer of the same visualization, not a second
 // implementation of it.
-import type { CoverageResponse, FrontierPointResponse, MapResponse, PathResponse } from "./types";
+import { EDGE_OPEN, EDGE_WALL, arenaSegments, cellOf, cornerToMap } from "./arenaGrid";
+import type { ArenaGrid, CoverageResponse, FrontierPointResponse, MapResponse, PathResponse } from "./types";
 
 // Palette matches tailwind.config.js's dark operator-panel colors --
 // canvas fills can't reference Tailwind classes, so the same hex values
@@ -18,6 +19,11 @@ export const COLOR_PATH = "#388bfd"; // accent
 export const COLOR_DRONE = "#388bfd"; // accent
 export const COLOR_TARGET = "#d29922"; // warn
 export const COLOR_FRONTIER = "#a371f7"; // purple, distinct from path/target/drone
+// 1 m arena grid: walls must stand out from the raw SLAM cells (white)
+export const COLOR_GRID_WALL = "#f0883e"; // orange
+export const COLOR_GRID_OPEN = "#3fb950"; // ok green
+export const COLOR_GRID_UNKNOWN = "rgba(139, 148, 158, 0.3)"; // dim, faint
+export const COLOR_GRID_ENTRY = "rgba(56, 139, 253, 0.22)"; // accent, translucent
 
 // nav_msgs/OccupancyGrid cell semantics (standard for /map and
 // /simulation/map; /coverage_grid and /simulation/coverage_grid reuse the
@@ -42,11 +48,15 @@ export interface RenderMapOptions {
   coverage?: CoverageResponse | null;
   path?: PathResponse | null;
   dronePosition?: { x: number; y: number } | null;
+  /** Heading in degrees, counter-clockwise from +x (map frame); draws an arrow. */
+  droneYawDeg?: number | null;
   target?: [number, number] | null;
   frontiers?: FrontierPointResponse[] | null;
   originX?: number;
   originY?: number;
   cellPx?: number;
+  /** The 1 m arena grid (radio ARENA_GRID); drawn over the SLAM cells. */
+  arena?: ArenaGrid | null;
 }
 
 /** Draws one frame of the occupancy map (+ overlays) onto `canvas`. Sizes
@@ -59,11 +69,13 @@ export function renderOccupancyMapCanvas(canvas: HTMLCanvasElement, options: Ren
     coverage,
     path,
     dronePosition,
+    droneYawDeg,
     target,
     frontiers,
     originX = 0,
     originY = 0,
     cellPx = 8,
+    arena,
   } = options;
   if (map.data == null || map.width == null || map.height == null || map.resolution == null) {
     return;
@@ -107,6 +119,52 @@ export function renderOccupancyMapCanvas(canvas: HTMLCanvasElement, options: Ren
     }
   }
 
+  // -- 1 m arena grid: take-off cell, drone's cell, then every edge --
+  if (arena) {
+    const res = map.resolution;
+    const toCanvas = ([x, y]: [number, number]): [number, number] => {
+      const [px, py] = worldToCanvas(x, y, originX, originY, res, cellPx);
+      return [px, height - py];
+    };
+    const cellPath = (col: number, row: number) => {
+      const corners = [
+        cornerToMap(arena, col, row),
+        cornerToMap(arena, col + 1, row),
+        cornerToMap(arena, col + 1, row + 1),
+        cornerToMap(arena, col, row + 1),
+      ].map(toCanvas);
+      ctx.beginPath();
+      corners.forEach(([px, py], i) => (i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py)));
+      ctx.closePath();
+    };
+    cellPath(0, 0);
+    ctx.fillStyle = COLOR_GRID_ENTRY;
+    ctx.fill();
+    if (dronePosition) {
+      const [col, row] = cellOf(arena, dronePosition.x, dronePosition.y);
+      cellPath(col, row);
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = COLOR_DRONE;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    // unknown first, walls last, so walls are never painted over
+    const order = [0, EDGE_OPEN, EDGE_WALL];
+    const segments = arenaSegments(arena).sort((a, b) => order.indexOf(a.state) - order.indexOf(b.state));
+    for (const seg of segments) {
+      const [x0, y0] = toCanvas(seg.from);
+      const [x1, y1] = toCanvas(seg.to);
+      ctx.strokeStyle =
+        seg.state === EDGE_WALL ? COLOR_GRID_WALL : seg.state === EDGE_OPEN ? COLOR_GRID_OPEN : COLOR_GRID_UNKNOWN;
+      ctx.lineWidth = seg.state === EDGE_WALL ? 3 : 1;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+    }
+  }
+
   // -- planned path --
   if (path?.points && path.points.length > 1) {
     ctx.strokeStyle = COLOR_PATH;
@@ -131,6 +189,17 @@ export function renderOccupancyMapCanvas(canvas: HTMLCanvasElement, options: Ren
     ctx.strokeStyle = "#fff";
     ctx.lineWidth = 1;
     ctx.stroke();
+    if (droneYawDeg != null) {
+      const a = (droneYawDeg * Math.PI) / 180;
+      const len = 14;
+      ctx.strokeStyle = COLOR_DRONE;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(dx, height - dy);
+      // canvas y grows downward: a counter-clockwise world angle is -sin on screen
+      ctx.lineTo(dx + len * Math.cos(a), height - dy - len * Math.sin(a));
+      ctx.stroke();
+    }
   }
 
   // -- current frontier/target --

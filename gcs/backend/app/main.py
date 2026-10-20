@@ -24,17 +24,16 @@ app -- see lifespan() below.
 
 The API surface is intentionally small. In particular: there is no route
 that can modify navigation, the map, or survivor tags, and there are
-exactly three mutating routes affecting the REAL mission (POST
-/api/command/start, POST /api/mission/start, POST /api/command/abort).
-Mission selection (POST /api/mission/start, backed by app/missions.py's
-static registry) only ever parameterizes *which* mission profile a
-subsequent real "start" applies to -- Main NIDAR Competition or Flight
-Test -- it does not add a new kind of operator action beyond start/abort;
-it still, ultimately, only ever publishes a "start" (plus routing
-metadata on /gcs/mission_select, not a command) to the drone. That is not
-a convention the frontend is trusted to respect -- it's true because no
-other route touching the real mission/flight-control path exists. See
-docs/REQUIREMENTS.md §6 and docs/CLAUDE.md "Important Constraints" §1.
+exactly two mutating routes affecting the REAL mission:
+POST /api/mission/start (START for a mission chosen from app/missions.py)
+and POST /api/command/abort. Both go ONLY over the MicroLR900 command
+radio (app/radio_link.py) to the Jetson -- never over Wi-Fi/rosbridge --
+and return success only when the Jetson has ACKed AND accepted the
+command. There is no mission-less START. Telemetry comes back over the
+same radio by default (Settings.telemetry_source "radio",
+app/radio_telemetry.py); "rosbridge" keeps the old Wi-Fi path for
+development against sim/. See docs/REQUIREMENTS.md §6 and CLAUDE.md
+"Important Constraints" §1.
 
 Separately, POST /api/simulation/run and POST /api/simulation/reset
 control a self-contained, ROS-topic-isolated simulation (see
@@ -48,6 +47,7 @@ imports mavros_msgs/flight_command.py at all).
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -61,12 +61,12 @@ from .missions import (
     MISSION_REGISTRY,
     MissionDefinition,
     MissionNotFoundError,
-    ScenarioDefinition,
-    ScenarioNotFoundError,
     get_mission,
-    get_scenario,
 )
+from .radio_link import DisabledRadioLink, RadioLink, RadioUnavailable
+from .radio_telemetry import RadioTelemetryClient
 from .ros_client import (
+    ARENA_GRID_TOPIC,
     BATTERY_TOPIC,
     COVERAGE_GRID_TOPIC,
     FCU_STATE_TOPIC,
@@ -75,6 +75,7 @@ from .ros_client import (
     GPS_TOPIC,
     HEARTBEAT_TOPIC,
     IMU_TOPIC,
+    LIDAR_TOPIC,
     MAP_TOPIC,
     MISSION_STATE_TOPIC,
     MULTI_STEP_TEST_STATUS_TOPIC,
@@ -83,6 +84,7 @@ from .ros_client import (
     PLANNED_PATH_TOPIC,
     POSE_TOPIC,
     SIMULATION_COVERAGE_GRID_TOPIC,
+    SLAM_POSE_TOPIC,
     SIMULATION_MAP_TOPIC,
     SIMULATION_MISSION_STATE_TOPIC,
     SIMULATION_PLANNED_PATH_TOPIC,
@@ -98,7 +100,6 @@ from .schemas import (
     AutonomyStateResponse,
     BatteryResponse,
     CameraStatusResponse,
-    CommandResponse,
     CoverageResponse,
     FcuStateResponse,
     FlightTestStatusResponse,
@@ -106,20 +107,24 @@ from .schemas import (
     FrontiersResponse,
     GpsResponse,
     HealthResponse,
+    LidarResponse,
     MapResponse,
     MappingStatusResponse,
     MissionResponse,
     MissionStartRequest,
-    MissionStartResponse,
     MultiStepFlightTestStatusResponse,
     NavigationResponse,
     PathPointResponse,
     PathResponse,
     PerceptionDetectionsResponse,
     PerceptionStatusResponse,
+    ParamResponse,
+    ParamWriteRequest,
     PoseResponse,
     PositionResponse,
-    ScenarioResponse,
+    RadioCommandResponse,
+    ComponentsResponse,
+    RadioStatusResponse,
     SensorsResponse,
     SimulationCommandResponse,
     SimulationStatusResponse,
@@ -130,38 +135,27 @@ from .schemas import (
 )
 
 _FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-
-
-def _scenario_to_response(scenario: ScenarioDefinition) -> ScenarioResponse:
-    return ScenarioResponse(
-        id=scenario.id,
-        name=scenario.name,
-        description=scenario.description,
-        implemented=scenario.implemented,
-        execution_config=scenario.execution_config,
-        steps=list(scenario.steps),
-    )
+_PARAM_NAME = re.compile(r"^[A-Z0-9_]{1,16}$")
 
 
 def _mission_to_response(mission: MissionDefinition) -> MissionResponse:
-    return MissionResponse(
-        id=mission.id,
-        name=mission.name,
-        description=mission.description,
-        ui_panel=mission.ui_panel,
-        required_nodes=list(mission.required_nodes),
-        scenarios=[_scenario_to_response(s) for s in mission.scenarios],
-    )
+    return MissionResponse(id=mission.id, name=mission.name, description=mission.description)
 
 
 def create_app(
-    client: RosBridgeClient | DisabledRosBridgeClient | None = None,
+    client: RosBridgeClient | DisabledRosBridgeClient | RadioTelemetryClient | None = None,
     settings: Settings | None = None,
+    radio: RadioLink | DisabledRadioLink | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     owns_client = client is None
+    owns_radio = radio is None
     if client is not None:
         ros_client = client
+    elif settings.telemetry_source == "radio":
+        # Fed by the RadioLink built below. With the radio disabled it is
+        # never fed and reports "no data" -- never a faked connection.
+        ros_client = RadioTelemetryClient()
     elif settings.ros_enabled:
         ros_client = RosBridgeClient(
             settings.rosbridge_host, settings.rosbridge_port, settings.connect_timeout_s
@@ -172,6 +166,16 @@ def create_app(
         # it's exactly and only settings.ros_enabled being False that
         # selects it.
         ros_client = DisabledRosBridgeClient()
+    if radio is None:
+        radio = (
+            RadioLink(
+                settings.radio_port,
+                settings.radio_baud,
+                telemetry=ros_client if isinstance(ros_client, RadioTelemetryClient) else None,
+            )
+            if settings.radio_enabled
+            else DisabledRadioLink()
+        )
 
     def ros_status() -> str:
         """"connected" / "disabled" / "unavailable" -- see
@@ -180,13 +184,15 @@ def create_app(
         type, so this reports correctly whether ros_client is a real
         RosBridgeClient, a DisabledRosBridgeClient, or a test double
         (tests/fakes.py's FakeRosBridgeClient) that has no concept of
-        "disabled" at all."""
-        if not settings.ros_enabled:
+        "disabled" at all. Radio telemetry uses no ROS link: "disabled"."""
+        if not settings.ros_enabled or settings.telemetry_source == "radio":
             return "disabled"
         return "connected" if ros_client.is_connected else "unavailable"
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        if owns_radio:
+            radio.start()
         if owns_client:
             try:
                 ros_client.connect()
@@ -212,17 +218,17 @@ def create_app(
         finally:
             if owns_client:
                 ros_client.disconnect()
+            if owns_radio:
+                radio.stop()
 
     app = FastAPI(
         title="NIDAR AirMouse GCS Backend",
         description=(
             "The entire operator command surface affecting the real mission "
-            "is exactly three endpoints: POST /api/command/start, "
-            "POST /api/mission/start, and POST /api/command/abort. Mission "
-            "selection only parameterizes which mission profile a "
-            "subsequent start applies to -- it is not a new kind of "
-            "operator action. No other route can affect the mission -- see "
-            "docs/REQUIREMENTS.md §6."
+            "is exactly two endpoints, both sent over the MicroLR900 command "
+            "radio: POST /api/mission/start (START for the selected mission) "
+            "and POST /api/command/abort. No other route can affect the "
+            "mission -- see docs/REQUIREMENTS.md §6."
         ),
         lifespan=lifespan,
     )
@@ -239,6 +245,8 @@ def create_app(
         return HealthResponse(
             connected=ros_client.is_connected,
             ros_status=ros_status(),
+            telemetry_source=settings.telemetry_source,
+            setup_enabled=settings.setup_enabled,
             rosbridge_host=settings.rosbridge_host,
             rosbridge_port=settings.rosbridge_port,
         )
@@ -331,17 +339,31 @@ def create_app(
             ),
         )
 
+    @app.get("/api/lidar", response_model=LidarResponse, tags=["telemetry"])
+    def lidar_scan() -> LidarResponse:
+        scan = ros_client.latest(LIDAR_TOPIC)
+        if not scan:
+            return LidarResponse()
+        return LidarResponse(available=True, **scan)
+
     @app.get("/api/map", response_model=MapResponse, tags=["map"])
     def map_snapshot() -> MapResponse:
         msg = ros_client.latest(MAP_TOPIC)
         if msg is None:
             return MapResponse()
         info = msg.get("info", {})
+        origin = (info.get("origin") or {}).get("position") or {}
+        robot = ros_client.latest(SLAM_POSE_TOPIC)
         return MapResponse(
             resolution=info.get("resolution"),
             width=info.get("width"),
             height=info.get("height"),
             data=msg.get("data"),
+            origin_x=origin.get("x"),
+            origin_y=origin.get("y"),
+            robot=robot,
+            age_s=msg.get("age_s"),
+            arena=ros_client.latest(ARENA_GRID_TOPIC),
         )
 
     @app.get("/api/coverage", response_model=CoverageResponse, tags=["map"])
@@ -451,31 +473,93 @@ def create_app(
             # See perception_detections above -- same degrade-not-500 rule.
             return CameraStatusResponse()
 
-    @app.post("/api/command/start", response_model=CommandResponse, tags=["command"])
-    def start_mission() -> CommandResponse:
+    def send_over_radio(command: str, mission: MissionDefinition | None) -> RadioCommandResponse:
+        """START/ABORT go only over the command radio. Success is reported
+        only when the Jetson ACKed and accepted the command."""
+        label = command.upper()
         try:
-            ros_client.publish_command("start")
-        except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=f"{exc} -- command not sent") from exc
-        return CommandResponse(status="sent", command="start")
+            result = radio.send_command(command, mission.radio_code if mission else 0)
+        except RadioUnavailable as exc:
+            raise HTTPException(status_code=503, detail=f"{exc} -- {label} not sent") from exc
+        if not result.acked:
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    f"{label} sent {result.attempts}x over the radio but the Jetson never "
+                    "acknowledged it -- radio link down or Jetson radio node not running"
+                ),
+            )
+        if not result.accepted:
+            raise HTTPException(status_code=409, detail=f"Jetson REJECTED {label}: {result.reason}")
+        return RadioCommandResponse(
+            status="accepted",
+            command=command,
+            mission=mission.id if mission else None,
+            nonce=result.nonce,
+            attempts=result.attempts,
+        )
 
-    @app.post("/api/command/abort", response_model=CommandResponse, tags=["command"])
-    def abort_mission() -> CommandResponse:
-        try:
-            ros_client.publish_command("abort")
-        except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=f"{exc} -- command not sent") from exc
-        return CommandResponse(status="sent", command="abort")
+    @app.post("/api/command/abort", response_model=RadioCommandResponse, tags=["command"])
+    def abort_mission() -> RadioCommandResponse:
+        return send_over_radio("abort", None)
 
-    # -- Multi-mission framework ---------------------------------------------
+    @app.get("/api/radio/status", response_model=RadioStatusResponse, tags=["command"])
+    def radio_status() -> RadioStatusResponse:
+        return RadioStatusResponse(**radio.status())
+
+    @app.get("/api/components", response_model=ComponentsResponse, tags=["telemetry"])
+    def components() -> ComponentsResponse:
+        if not isinstance(ros_client, RadioTelemetryClient):
+            return ComponentsResponse()
+        return ComponentsResponse(available=True, components=ros_client.components())
+
+    # -- Bench Setup page (GCS_SETUP_ENABLED only) ----------------------------
+    #
+    # Read/write Pixhawk parameters over the radio, through the Jetson.
+    # Deliberately NOT part of the operator command surface: these routes
+    # do not exist unless the backend was started for bench setup, and the
+    # Jetson itself refuses writes unless started with --setup, while the
+    # vehicle is armed, or while a mission runs.
+
+    if settings.setup_enabled:
+
+        def check_param_name(name: str) -> str:
+            if not _PARAM_NAME.match(name):
+                raise HTTPException(status_code=422, detail=f"invalid parameter name {name!r}")
+            return name
+
+        def param_reply(result, action: str) -> ParamResponse:
+            if not result.replied:
+                raise HTTPException(
+                    status_code=504,
+                    detail=f"{action} {result.name}: no reply from the Jetson after "
+                    f"{result.attempts} radio attempts",
+                )
+            if result.error is not None or result.value is None:
+                raise HTTPException(status_code=409, detail=f"{action} {result.name} refused: {result.error}")
+            return ParamResponse(name=result.name, value=result.value, attempts=result.attempts)
+
+        @app.get("/api/setup/param/{name}", response_model=ParamResponse, tags=["setup"])
+        def read_param(name: str) -> ParamResponse:
+            check_param_name(name)
+            try:
+                return param_reply(radio.read_param(name), "read")
+            except RadioUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        @app.post("/api/setup/param", response_model=ParamResponse, tags=["setup"])
+        def write_param(body: ParamWriteRequest) -> ParamResponse:
+            check_param_name(body.name)
+            try:
+                return param_reply(radio.set_param(body.name, body.value), "write")
+            except RadioUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    # -- Missions -------------------------------------------------------------
     #
     # app/missions.py's static registry is the only source of truth for
-    # which missions/scenarios exist -- these routes only ever read it
-    # (never mutate it) and, for POST /api/mission/start, publish routing
-    # metadata (/gcs/mission_select) immediately before the same "start"
-    # publish_command() above already sends. This does not add a new kind
-    # of operator action: it is still only ever "start" or "abort"
-    # reaching the drone, see the module docstring.
+    # which missions exist (the Mission dropdown). Selecting one is not an
+    # operator action; START for it is POST /api/mission/start below.
 
     @app.get("/api/missions", response_model=list[MissionResponse], tags=["missions"])
     def list_missions() -> list[MissionResponse]:
@@ -487,18 +571,6 @@ def create_app(
             return _mission_to_response(get_mission(mission_id))
         except MissionNotFoundError:
             raise HTTPException(status_code=404, detail=f"unknown mission: {mission_id!r}")
-
-    @app.get(
-        "/api/missions/{mission_id}/scenarios",
-        response_model=list[ScenarioResponse],
-        tags=["missions"],
-    )
-    def get_mission_scenario_list(mission_id: str) -> list[ScenarioResponse]:
-        try:
-            mission = get_mission(mission_id)
-        except MissionNotFoundError:
-            raise HTTPException(status_code=404, detail=f"unknown mission: {mission_id!r}")
-        return [_scenario_to_response(s) for s in mission.scenarios]
 
     @app.get("/api/flight-test/status", response_model=FlightTestStatusResponse, tags=["flight_test"])
     def flight_test_status() -> FlightTestStatusResponse:
@@ -529,55 +601,13 @@ def create_app(
             # Same degrade-not-500 rule as flight_test_status above.
             return MultiStepFlightTestStatusResponse()
 
-    @app.post("/api/mission/start", response_model=MissionStartResponse, tags=["missions"])
-    def start_mission_by_id(body: MissionStartRequest) -> MissionStartResponse:
+    @app.post("/api/mission/start", response_model=RadioCommandResponse, tags=["missions"])
+    def start_mission_by_id(body: MissionStartRequest) -> RadioCommandResponse:
         try:
-            scenario = get_scenario(body.mission, body.scenario)
+            mission = get_mission(body.mission)
         except MissionNotFoundError:
             raise HTTPException(status_code=404, detail=f"unknown mission: {body.mission!r}")
-        except ScenarioNotFoundError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"unknown scenario {body.scenario!r} for mission {body.mission!r}",
-            )
-        if not scenario.implemented:
-            raise HTTPException(status_code=400, detail=f"scenario {body.scenario!r} is not yet implemented")
-
-        # Reject if anything is already active -- derived from real ROS
-        # state, not backend bookkeeping. Both flight-test status topics
-        # are checked (hover_test_node and multi_step_test_node are
-        # separate ROS nodes, but only one flight-test scenario can
-        # meaningfully run at a time from the operator's perspective) --
-        # see MULTI_STEP_TEST_STATUS_TOPIC's docstring in app/ros_client.py
-        # for why they're separate topics in the first place.
-        mission_state_msg = ros_client.latest(MISSION_STATE_TOPIC) or {}
-        real_mission_state = mission_state_msg.get("data")
-        flight_test_msg = ros_client.latest(FLIGHT_TEST_STATUS_TOPIC) or {}
-        flight_test_state = flight_test_msg.get("state")
-        multi_step_msg = ros_client.latest(MULTI_STEP_TEST_STATUS_TOPIC) or {}
-        multi_step_state = multi_step_msg.get("state")
-        if real_mission_state in ("entering", "searching", "exiting"):
-            raise HTTPException(
-                status_code=409,
-                detail=f"cannot start: Main NIDAR mission is already active (state={real_mission_state!r})",
-            )
-        if flight_test_state not in (None, "idle", "complete", "aborted"):
-            raise HTTPException(
-                status_code=409,
-                detail=f"cannot start: Flight Test is already active (state={flight_test_state!r})",
-            )
-        if multi_step_state not in (None, "idle", "complete", "aborted", "failed"):
-            raise HTTPException(
-                status_code=409,
-                detail=f"cannot start: Flight Test is already active (state={multi_step_state!r})",
-            )
-
-        try:
-            ros_client.publish_mission_select(body.mission, body.scenario)
-            ros_client.publish_command("start")
-        except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=f"{exc} -- command not sent") from exc
-        return MissionStartResponse(status="sent", mission=body.mission, scenario=body.scenario)
+        return send_over_radio("start", mission)
 
     # -- Simulation control surface -----------------------------------------
     #

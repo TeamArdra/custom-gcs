@@ -31,7 +31,7 @@ _UNREACHABLE_PORT = 19199
 
 
 def _disabled_settings() -> Settings:
-    return Settings(ros_enabled=False)
+    return Settings(ros_enabled=False, telemetry_source="rosbridge")
 
 
 class TestStartupAndShutdown:
@@ -60,6 +60,7 @@ class TestStartupAndShutdown:
             rosbridge_port=_UNREACHABLE_PORT,
             connect_timeout_s=0.3,
             ros_enabled=True,
+            telemetry_source="rosbridge",
         )
         app = create_app(settings=settings)
         with TestClient(app) as client:
@@ -83,7 +84,7 @@ class TestHealthReportsRosStatus:
         *would* be used if ROS were enabled -- Footer.tsx on the frontend
         reads this unconditionally, and it must not go missing/null just
         because ROS itself is off."""
-        settings = Settings(rosbridge_host="10.0.0.5", rosbridge_port=9090, ros_enabled=False)
+        settings = Settings(rosbridge_host="10.0.0.5", rosbridge_port=9090, ros_enabled=False, telemetry_source="rosbridge")
         app = create_app(settings=settings)
         with TestClient(app) as client:
             body = client.get("/health").json()
@@ -100,23 +101,13 @@ class TestMissionRegistryWorksWithoutRos:
         with TestClient(app) as client:
             resp = client.get("/api/missions")
         assert resp.status_code == 200
-        ids = {m["id"] for m in resp.json()}
-        assert {"main_nidar", "flight_test"} <= ids
+        assert [m["id"] for m in resp.json()] == ["hover", "motor_test"]
 
     def test_mission_detail(self):
         app = create_app(settings=_disabled_settings())
         with TestClient(app) as client:
-            resp = client.get("/api/missions/flight_test")
+            resp = client.get("/api/missions/hover")
         assert resp.status_code == 200
-        assert resp.json()["id"] == "flight_test"
-
-    def test_mission_scenarios(self):
-        app = create_app(settings=_disabled_settings())
-        with TestClient(app) as client:
-            resp = client.get("/api/missions/flight_test/scenarios")
-        assert resp.status_code == 200
-        scenario_ids = {s["id"] for s in resp.json()}
-        assert "hover" in scenario_ids
 
     def test_unknown_mission_still_404s(self):
         app = create_app(settings=_disabled_settings())
@@ -148,7 +139,7 @@ class TestRosDependentReadsDegradeInsteadOfCrashing:
         with TestClient(app) as client:
             resp = client.get("/api/map")
         assert resp.status_code == 200
-        assert resp.json() == {"resolution": None, "width": None, "height": None, "data": None}
+        assert resp.json() == {"resolution": None, "width": None, "height": None, "data": None, "origin_x": None, "origin_y": None, "robot": None, "age_s": None, "arena": None}
 
     def test_flight_test_status_returns_defaults(self):
         app = create_app(settings=_disabled_settings())
@@ -159,36 +150,28 @@ class TestRosDependentReadsDegradeInsteadOfCrashing:
 
 
 class TestRosDependentWritesFailSafeInsteadOfFakingSuccess:
-    """The core safety requirement of this task: with ROS disabled, START
-    must never come back looking like the real mission actually started.
-    Every one of these must 503, carrying a detail that says ROS is
-    disabled -- never a 200 "sent"."""
+    """The core safety requirement: nothing may come back looking like it
+    was sent when the transport it needs is disabled."""
 
-    def test_start_command_503s_with_ros_disabled(self):
+    def test_radio_disabled_start_and_abort_503_never_a_fake_success(self):
+        """START/ABORT go over the command radio, not ROS. With the radio
+        disabled (GCS_RADIO_ENABLED=false) they must fail loudly."""
+        app = create_app(settings=Settings(ros_enabled=False, radio_enabled=False, telemetry_source="rosbridge"))
+        with TestClient(app) as client:
+            start = client.post("/api/mission/start", json={"mission": "hover"})
+            abort = client.post("/api/command/abort")
+        for resp in (start, abort):
+            assert resp.status_code == 503
+            assert "radio is disabled" in resp.json()["detail"]
+
+    def test_commands_do_not_depend_on_ros(self):
+        """ROS disabled but radio up: START still goes out over the radio
+        (telemetry being unavailable doesn't block the command path)."""
         app = create_app(settings=_disabled_settings())
         with TestClient(app) as client:
-            resp = client.post("/api/command/start")
-        assert resp.status_code == 503
-        assert "ROS is disabled" in resp.json()["detail"]
-
-    def test_abort_command_503s_with_ros_disabled(self):
-        app = create_app(settings=_disabled_settings())
-        with TestClient(app) as client:
-            resp = client.post("/api/command/abort")
-        assert resp.status_code == 503
-        assert "ROS is disabled" in resp.json()["detail"]
-
-    def test_mission_start_503s_with_ros_disabled_not_a_fake_200(self):
-        """Mission selection (GET /api/missions etc.) can be inspected
-        locally, but POST /api/mission/start still ultimately publishes a
-        real "start" -- see app/main.py's module docstring -- so it must
-        fail exactly like /api/command/start does, never report
-        status="sent"."""
-        app = create_app(settings=_disabled_settings())
-        with TestClient(app) as client:
-            resp = client.post("/api/mission/start", json={"mission": "flight_test", "scenario": "hover"})
-        assert resp.status_code == 503
-        assert "ROS is disabled" in resp.json()["detail"]
+            resp = client.post("/api/mission/start", json={"mission": "hover"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "accepted"
 
     def test_simulation_run_503s_with_ros_disabled(self):
         """The simulation control surface also goes through ros_client
